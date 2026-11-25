@@ -93,10 +93,11 @@ export async function joinChannel(
   if (first !== undefined) switchToChannelWindow(networkSlug, first);
 }
 
-// issue 2719 — the error sink of the two doors that have no line of their own
-// to print on: the confirm modal is gone by the time the join answers, and an
-// invite's [Join] button sits on a row the join is about to replace. So a
-// failed join is a toast, on the ONE toast surface (Toasts.tsx).
+// issue 2719 — the error sink of the doors that have no line of their own to
+// print on: the confirm modal is gone by the time the join answers, an
+// invite's [Join] button sits on a row the join is about to replace, and a
+// featured link on a parked row sits on a row its own reconnect replaces. So
+// a failed join is a toast, on the ONE toast surface (Toasts.tsx).
 //
 // It used to be a `console.warn`, argued in a comment that said this catch saw
 // "only the REST-level failure (401 / network down)". It saw every failure the
@@ -131,16 +132,31 @@ export function joinToastText(toast: JoinToast): string {
   return `Couldn't join ${toast.rawChannel} on ${toast.networkSlug}: ${toast.message}`;
 }
 
+/**
+ * THE producer of the join toast: `performJoin` below, and a HomePane
+ * featured link whose own reconnect replaced the row it would have printed on
+ * (review F1 of PR 2747). One producer, so both doors share one queue, one
+ * identity check and one copy. `t` is the token the join was sent with.
+ */
+export function raiseJoinFailure(
+  t: string,
+  networkSlug: string,
+  rawChannel: string,
+  err: unknown,
+): void {
+  // An account that did not click is owed nothing, and must not be told
+  // about a channel the previous one asked for.
+  if (identityMoved(t)) return;
+  failures.queue({ networkSlug, rawChannel, message: errorMessage(err) });
+}
+
 async function performJoin(networkSlug: string, rawChannel: string): Promise<void> {
   const t = token();
   if (!t) return; // post-logout race — nothing to join with.
   try {
     await joinChannel(t, networkSlug, [rawChannel], null);
   } catch (err) {
-    // An account that did not click is owed nothing, and must not be told
-    // about a channel the previous one asked for.
-    if (identityMoved(t)) return;
-    failures.queue({ networkSlug, rawChannel, message: errorMessage(err) });
+    raiseJoinFailure(t, networkSlug, rawChannel, err);
   }
 }
 

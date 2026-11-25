@@ -1,4 +1,4 @@
-import { type Component, createResource, createSignal, For, Show } from "solid-js";
+import { type Component, createResource, createSignal, For, onCleanup, Show } from "solid-js";
 import {
   ApiError,
   type AvailableNetworkRow,
@@ -6,7 +6,7 @@ import {
   getFeaturedChannels,
 } from "./lib/api";
 import { token } from "./lib/auth";
-import { joinChannel, switchToChannelWindow } from "./lib/channelJoin";
+import { joinChannel, raiseJoinFailure, switchToChannelWindow } from "./lib/channelJoin";
 import { channelKey } from "./lib/channelKey";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { homeData } from "./lib/home";
@@ -48,7 +48,9 @@ const SHOW_NETWORK_MAP = false;
 // joined). Join errors surface inline — never silently swallowed.
 // issue 2719 — the JOIN is `joinChannel`, the one join verb: on a network
 // with no session (this list also renders on a parked/failed row) the tap
-// reconnects it first, no modal, because the tap is the intent.
+// reconnects it first, no modal, because the tap is the intent. That
+// reconnect can replace the row before the join answers, and then the error
+// goes to the join toast (`raiseJoinFailure`), since the inline line is gone.
 // #496 — an explanatory intro line (`homeFeaturedIntroCopy`) precedes the
 // list, gated on the same has-links condition so an empty featured list
 // shows neither the intro nor a dangling heading. `heading` (optional) still
@@ -71,17 +73,33 @@ const FeaturedLinks: Component<{ slug: string; heading?: string }> = (props) => 
     },
   );
 
+  // issue 2719, review F1 of PR 2747 — a tap on a parked row's link
+  // reconnects first, and the reconnect replaces the row: the server
+  // broadcasts `connection_state_changed` before it answers the PATCH, and
+  // the rows' `<For>` swaps this DisconnectedRow for a ConnectedRow, which
+  // disposes this list and the line below with it. A join that fails after
+  // that has nowhere to print here, so it goes to the join toast instead.
+  let disposed = false;
+  onCleanup(() => {
+    disposed = true;
+  });
+
   const onClick = async (name: string): Promise<void> => {
+    const slug = props.slug;
     setError(null);
-    if (windowStateByChannel()[channelKey(props.slug, name)] === "joined") {
-      switchToChannelWindow(props.slug, name);
+    if (windowStateByChannel()[channelKey(slug, name)] === "joined") {
+      switchToChannelWindow(slug, name);
       return;
     }
     const t = token();
     if (!t) return;
     try {
-      await joinChannel(t, props.slug, [name], null);
+      await joinChannel(t, slug, [name], null);
     } catch (err) {
+      if (disposed) {
+        raiseJoinFailure(t, slug, name, err);
+        return;
+      }
       setError(
         err instanceof ApiError ? `${name}: ${friendlyApiError(err)}` : `${name}: join failed`,
       );

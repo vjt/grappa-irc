@@ -9727,6 +9727,17 @@ reconnected: its session is alive and retrying, and the hold covers it.
   "Couldn't join <chan> on <slug>: <reason>", the reason being `errorMessage`,
   i.e. the server's refusal in its friendly copy or a transport failure's own
   text. It is skipped when the identity moved during the await.
+* A featured link on a parked or failed row falls back to that toast when its
+  line is gone. The tap's own reconnect replaces the row: the server
+  broadcasts `connection_state_changed` before it answers the PATCH,
+  `patchHomeNetwork` stores a new row object, and HomePane's reference-keyed
+  `<For>` swaps the `DisconnectedRow` for a `ConnectedRow`, disposing the
+  `FeaturedLinks` that owned the line. A POST that fails after that (a
+  transport drop between the two calls, a 5xx, a 429) used to set an error
+  signal nothing rendered. `FeaturedLinks` now marks itself disposed in
+  `onCleanup` and sends such a failure to `raiseJoinFailure`, the toast's one
+  producer, shared with `performJoin`; while the line still exists, it prints
+  there as before. Found by w2's review of PR 2747 (F1), red first in vitest.
 
 `postJoin` now has one caller. A new join door calls `joinChannel`.
 

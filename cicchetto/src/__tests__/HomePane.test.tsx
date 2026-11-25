@@ -1,7 +1,10 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import HomePane from "../HomePane";
+import { dismissJoinToast, joinToasts, joinToastText } from "../lib/channelJoin";
 import { channelKey } from "../lib/channelKey";
+import { errorMessage } from "../lib/friendlyApiError";
 import { SHARE_SESSION_LABEL } from "../lib/shareModal";
 import { LIST_WINDOW_NAME } from "../lib/windowKinds";
 
@@ -210,6 +213,9 @@ vi.mock("../lib/friendlyApiError", () => ({
   // tested in friendlyApiError.test.ts (19+ cases); HomePane only
   // needs to prove it ROUTES through the helper, not re-test it.
   friendlyApiError: (err: { message: string }) => `friendly: ${err.message}`,
+  // issue 2719 — the join toast's copy (`channelJoin.raiseJoinFailure`). Same
+  // identity stub: the test compares against whatever production formats.
+  errorMessage: (err: { message: string }) => `friendly: ${err.message}`,
 }));
 
 describe("HomePane", () => {
@@ -348,6 +354,45 @@ describe("HomePane", () => {
       );
       expect(postJoinMock).not.toHaveBeenCalled();
       expect(setSelectedChannelMock).not.toHaveBeenCalled();
+    });
+
+    // issue 2719, review F1 — the tap's own reconnect replaces the row it was
+    // made on. The server broadcasts `connection_state_changed` before it
+    // answers the PATCH, `patchHomeNetwork` stores a new row object, and the
+    // reference-keyed `<For>` swaps the DisconnectedRow for a ConnectedRow,
+    // disposing the FeaturedLinks that owns the inline line. A POST that fails
+    // after that has nowhere left to print, so it raises the join toast.
+    it("a join that fails after its own reconnect replaced the row raises the join toast (issue 2719)", async () => {
+      const { ApiError } = await import("../lib/api");
+      const [home, setHome] = createSignal<HomeDataLocal | null>(parkedNetworks("azzurra"));
+      homeDataMock.mockImplementation(() => home());
+      networkBySlugMock.mockReturnValue({ connection_state: "parked" });
+      getFeaturedMock.mockResolvedValue([{ name: "#sniffo", description: null }]);
+      patchNetworkMock.mockImplementationOnce(() => {
+        setHome(connectedNetworks("azzurra"));
+        return Promise.resolve();
+      });
+      const refusal = new ApiError(429, "rate_limited");
+      postJoinMock.mockRejectedValueOnce(refusal);
+      render(() => <HomePane />);
+
+      fireEvent.click(await screen.findByText("#sniffo"));
+
+      await waitFor(() => expect(postJoinMock).toHaveBeenCalled());
+      expect(
+        screen.queryByTestId("home-remove-network-azzurra"),
+        "instrument broken: the reconnect never replaced the parked row",
+      ).toBeNull();
+      await waitFor(() => expect(joinToasts()).toHaveLength(1));
+      const [toast] = joinToasts();
+      expect(toast && joinToastText(toast)).toBe(
+        joinToastText({
+          networkSlug: "azzurra",
+          rawChannel: "#sniffo",
+          message: errorMessage(refusal),
+        }),
+      );
+      for (const t of joinToasts()) dismissJoinToast(t.id);
     });
 
     it("visitor home renders featured for a connected network (via ConnectedRow)", async () => {
