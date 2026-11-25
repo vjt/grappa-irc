@@ -13,6 +13,12 @@ defmodule Grappa.Session.VerbPolicy do
   and cic's `Record<WindowState, …>` make a new state RED — there is no
   default bucket to fall into.
 
+  A clause whose first argument is a bare variable carries no tag, so the
+  two directions above cannot see it: `handle_call(r, _, s) when elem(r, 0)
+  == :send_foo` would answer a verb the table never classified. So the
+  untagged heads are counted too, and the only one allowed is the
+  registration gate itself — exactly one `handle_call/3`, no `handle_cast/2`.
+
   The policies (`t:t/0`) are the verb's SHAPE relative to registration:
 
     * `:needs_registered` — writes a line, and there is nothing worth doing
@@ -40,8 +46,10 @@ defmodule Grappa.Session.VerbPolicy do
   defmacro __before_compile__(env) do
     table = Module.get_attribute(env.module, :verb_policy)
 
-    handled =
-      MapSet.new(tags(env.module, {:handle_call, 3}) ++ tags(env.module, {:handle_cast, 2}))
+    calls = tags(env.module, {:handle_call, 3})
+    casts = tags(env.module, {:handle_cast, 2})
+    handled = (calls ++ casts) |> Enum.reject(&is_nil/1) |> MapSet.new()
+    untagged = [handle_call: Enum.count(calls, &is_nil/1), handle_cast: Enum.count(casts, &is_nil/1)]
 
     classified = MapSet.new(Map.keys(table))
     bad_policies = for {tag, policy} <- table, policy not in @policies, do: {tag, policy}
@@ -51,7 +59,8 @@ defmodule Grappa.Session.VerbPolicy do
         [
           unclassified: MapSet.to_list(MapSet.difference(handled, classified)),
           unanswered: MapSet.to_list(MapSet.difference(classified, handled)),
-          unknown_policy: bad_policies
+          unknown_policy: bad_policies,
+          untagged_heads: if(untagged == [handle_call: 1, handle_cast: 0], do: [], else: untagged)
         ],
         fn {_, list} -> list == [] end
       )
@@ -63,15 +72,17 @@ defmodule Grappa.Session.VerbPolicy do
         description:
           "#{inspect(env.module)} @verb_policy does not match its handle_call/handle_cast " <>
             "clauses (issue 2728): #{inspect(problems)}. Classify every request tag as one of " <>
-            "#{inspect(@policies)}, and drop entries no clause answers."
+            "#{inspect(@policies)}, drop entries no clause answers, and give every clause but " <>
+            "the one handle_call gate a literal request tag."
     end
 
     nil
   end
 
+  # One entry per clause, in order: its tag, or nil for a head that has none.
   defp tags(module, name_arity) do
     case Module.get_definition(module, name_arity) do
-      {:v1, _, _, clauses} -> for {_, [request | _], _, _} <- clauses, tag = tag(request), do: tag
+      {:v1, _, _, clauses} -> for {_, [request | _], _, _} <- clauses, do: tag(request)
       nil -> []
     end
   end

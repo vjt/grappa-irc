@@ -130,11 +130,15 @@ defmodule Grappa.Session.RegistrationGateTest do
   end
 
   describe "Grappa.Session.VerbPolicy" do
+    # Every probe carries the one untagged head the check allows, the gate's
+    # shape: a bare `request` refused by a guard, ahead of the tagged clauses.
     defp compile_server(policy, clauses) do
       Code.compile_string("""
       defmodule Grappa.Session.VerbPolicyProbe#{System.unique_integer([:positive])} do
         @verb_policy #{inspect(policy)}
         @before_compile Grappa.Session.VerbPolicy
+        def handle_call(request, _, s) when is_tuple(request) and elem(request, 0) == :gated,
+          do: {:reply, {:error, :not_registered}, s}
         #{clauses}
       end
       """)
@@ -164,6 +168,24 @@ defmodule Grappa.Session.RegistrationGateTest do
     test "a table entry no clause answers fails to compile" do
       assert_raise CompileError, ~r/unanswered: \[:gone\]/, fn ->
         compile_server(%{ping: :local, gone: :local}, "def handle_call(:ping, _, s), do: {:reply, :pong, s}")
+      end
+    end
+
+    # A head with no literal tag answers requests the two directions above
+    # cannot see, so beyond the gate there must be none.
+    test "a second untagged handle_call head, or any untagged handle_cast head, fails to compile" do
+      assert_raise CompileError, ~r/untagged_heads: \[handle_call: 2, handle_cast: 0\]/, fn ->
+        compile_server(%{ping: :local}, """
+        def handle_call(:ping, _, s), do: {:reply, :pong, s}
+        def handle_call(r, _, s) when elem(r, 0) == :send_foo, do: {:reply, :ok, s}
+        """)
+      end
+
+      assert_raise CompileError, ~r/untagged_heads: \[handle_call: 1, handle_cast: 1\]/, fn ->
+        compile_server(%{ping: :local}, """
+        def handle_call(:ping, _, s), do: {:reply, :pong, s}
+        def handle_cast(msg, s) when elem(msg, 0) == :send_foo, do: {:noreply, s}
+        """)
       end
     end
 
