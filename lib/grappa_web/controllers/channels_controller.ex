@@ -120,11 +120,13 @@ defmodule GrappaWeb.ChannelsController do
   `:join_failed` event with numeric=475 → cic surfaces the failure
   in the synthetic pseudo-row (state=:failed).
 
-  issue 2114 — a JOIN that arrives while the session has no socket yet
-  (the reconnect backoff window) is 202 as well, not 400: the session
-  queues it and flushes at the next registration, and the `:pending`
-  window this returns behind is the honest state either way. The 400
-  `not_connected` is left to the case the session cannot outlive.
+  issue 2114 / issue 2703 — a JOIN that arrives before the session has
+  registered (no socket yet in the reconnect backoff, or a socket that is
+  up before 001) is 202 as well, not 400: the session holds it and sends
+  it at 001, and the `:pending` window this returns behind is the honest
+  state either way. A `DELETE` for the same channel before then cancels
+  the held JOIN. The 400 `not_connected` is left to the case the session
+  cannot outlive.
   """
   @spec create(Plug.Conn.t(), map()) ::
           Plug.Conn.t()

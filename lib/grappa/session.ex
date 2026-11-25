@@ -1494,12 +1494,13 @@ defmodule Grappa.Session do
   `window_states[ch] = :pending` AND broadcasts `window_pending` on the
   user-level PubSub topic BEFORE returning. cic's setPending dispatch
   fires (and the synthetic sidebar row appears) by the time the REST
-  controller returns 202. The actual upstream socket write
-  (`Client.send_join` → `:gen_tcp.send`) is itself a `GenServer.call`
-  that the Session.Server issues inside the same handler, but that
-  blocking is what we WANT — backpressure surfaces synchronously
-  instead of letting cic see "still pending" while the cast sits in
-  the mailbox queue.
+  controller returns 202. On a registered session the actual upstream
+  socket write (`Client.send_join` → `:gen_tcp.send`) is itself a
+  `GenServer.call` that the Session.Server issues inside the same
+  handler, but that blocking is what we WANT — backpressure surfaces
+  synchronously instead of letting cic see "still pending" while the
+  cast sits in the mailbox queue. Before 001 there is no write in that
+  handler at all (issue 2703, below).
 
   Pre-bucket-`post-cr-review-phase1` this was a cast: REST returned 202
   in <30ms and the `window_pending` broadcast was delayed by the
@@ -1517,13 +1518,16 @@ defmodule Grappa.Session do
   prefix) OR the key contains CR/LF/NUL/space. Returns `:ok` once the
   broadcast has fired.
 
-  issue 2114 — `:ok` ALSO covers "the session has no socket yet": the
-  Session.Server queues the JOIN and puts it on the wire at the next
-  registration, opening the window `:pending` in the same breath. The
-  caller cannot tell the two apart, and should not: `:pending` is the
-  server-owned state for "asked for, not joined", and both paths reach
-  it. `{:error, :not_connected}` is now only a transport error on a
-  socket that WAS there (the Client is on its way down with the write).
+  issue 2114 / issue 2703 — `:ok` ALSO covers "the session has not
+  registered yet", whether its Client has no socket yet (the reconnect
+  backoff) or a socket that is up before 001: the Session.Server holds
+  the JOIN and puts it on the wire at 001 (or at the #347 +r defer),
+  opening the window `:pending` in the same breath. A PART that arrives
+  in between cancels it. The caller cannot tell a held JOIN from a sent
+  one, and should not: `:pending` is the server-owned state for "asked
+  for, not joined", and both paths reach it. `{:error, :not_connected}`
+  is only a transport error on a registered session's socket (the
+  Client is on its way down with the write).
 
   UX-4 bucket F — `key` is the optional +k channel key. Pass `nil`
   (or `""`, normalised) for keyless channels. The key never reaches
