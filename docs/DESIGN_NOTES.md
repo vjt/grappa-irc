@@ -9121,10 +9121,14 @@ not run again there. Two code commits came after it. One makes
 deletes the dead `Server.registry_key/2`, and only the 10 test files it
 repointed were run on it. The review round after that dropped `Server.via/2`'s
 `is_tuple(subject)` guard and corrected prose, and ran only the five test
-files it touched. This change adds and removes no test.
+files it touched. The round after that dropped the same guard from
+`Server.start_link/1`, and ran only `test/grappa/session/` and the six
+`test/grappa/session_*test.exs` files. This change adds
+and removes no test.
 
 * **Control, unmutated:** 8986 tests, 0 failures, on the hygiene commit
-  (`a2f4003e8`, pre-rebase) and on the credo commit.
+  (`a2f4003e8`, pre-rebase) and on the credo commit (`a963501a3`,
+  pre-rebase).
 * **Consistent mutant**, `@registry_key_tag :session` → `:session_v2`, one
   line: 8986 tests, 0 failures. Every key and every head moved together, so
   the key really is spelled once and changing it is a one-line edit.
