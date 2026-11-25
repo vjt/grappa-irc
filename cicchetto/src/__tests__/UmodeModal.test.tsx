@@ -29,12 +29,16 @@ vi.mock("../lib/supportedUmodes", () => ({
   supportedUmodesForNetwork: (id: number) => mockSupported[id] ?? [],
 }));
 
+import { friendlyError } from "../lib/friendlyError";
+import { dismissOpsMenuToast, opsMenuToasts } from "../lib/opsMenu";
+import { NoReply, REPLY_DEADLINE_MS } from "../lib/transportFailure";
 import { closeUmodeModal, openUmodeModal } from "../lib/umodeModal";
 import UmodeModal from "../UmodeModal";
 
 describe("UmodeModal", () => {
   beforeEach(() => {
     socketMock.pushChannelUmode.mockClear();
+    for (const t of opsMenuToasts()) dismissOpsMenuToast(t.id);
     mockUmodes = {};
     mockSupported = {};
     closeUmodeModal();
@@ -69,6 +73,22 @@ describe("UmodeModal", () => {
     const { getByLabelText } = render(() => <UmodeModal />);
     fireEvent.click(getByLabelText(/invisible/i));
     expect(socketMock.pushChannelUmode).toHaveBeenCalledWith(1, "+i");
+  });
+
+  // issue 2738 (N5) — same detached-toggle sink as ModeModal.
+  it("a toggle that gets no answer becomes a toast naming the user mode", async () => {
+    mockUmodes[1] = [];
+    const err = new NoReply(REPLY_DEADLINE_MS);
+    socketMock.pushChannelUmode.mockRejectedValueOnce(err);
+    openUmodeModal("bahamut");
+
+    const { getByLabelText } = render(() => <UmodeModal />);
+    fireEvent.click(getByLabelText(/invisible/i));
+    await vi.waitFor(() =>
+      expect(opsMenuToasts().map((t) => t.message)).toEqual([
+        `User mode +i: ${friendlyError(err)}`,
+      ]),
+    );
   });
 
   it("toggling an active settable umode sends -<letter>", () => {
