@@ -2,7 +2,6 @@ import { type Component, createResource, createSignal, For, Show } from "solid-j
 import {
   ApiError,
   type AvailableNetworkRow,
-  addNetwork,
   type ConnectionState,
   getFeaturedChannels,
   postJoin,
@@ -19,8 +18,9 @@ import {
   type SessionLifetimeCopy,
 } from "./lib/homeSessionCopy";
 import { identifiedForNetwork } from "./lib/identity";
+import { attachNetwork } from "./lib/networkAttach";
 import { createNetworkReconnect } from "./lib/networkReconnect";
-import { networkIdBySlug, refetchNetworks, refetchUser, user } from "./lib/networks";
+import { networkIdBySlug, user } from "./lib/networks";
 import { flavorForSlug, registerableFlavor } from "./lib/registrationTemplates";
 import { openRegistrationWizard } from "./lib/registrationWizard";
 import { setSelectedChannel } from "./lib/selection";
@@ -187,13 +187,10 @@ const AvailableNetworks: Component<{ available: AvailableNetworkRow[] }> = (prop
     setError(null);
     setConnecting(slug);
     try {
-      await addNetwork(t, slug);
-      // The server spawns + the connection_state_changed / networks
-      // refetch surfaces the new row; this section drops it once /me
-      // reflects the attach. No optimistic local mutation (cic never
-      // originates state).
-      refetchUser();
-      refetchNetworks();
+      // issue 2703 — the attach verb, shared with the invite link: the POST
+      // plus the two re-reads that surface the new row. This section drops it
+      // once /me reflects the attach.
+      await attachNetwork(t, slug);
     } catch (err) {
       setError(
         err instanceof ApiError ? `${slug}: ${friendlyApiError(err)}` : `${slug}: connect failed`,
