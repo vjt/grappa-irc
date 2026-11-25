@@ -9787,6 +9787,51 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    # The test above proves the anon visitor's rotation is refused; this one
+    # proves the refusal leaves the staged identify alone. A rotation that
+    # changed nothing stored makes nothing stale, so dropping the slot here
+    # would leave a visitor identified upstream and never bound.
+    test "visitor (anon): a refused rotation keeps the staged identify slot, and its +r still commits" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.welcome(server, 1_000)
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg({:visitor, visitor.id}, network.id, "NickServ", "IDENTIFY typedpw")
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg({:visitor, visitor.id}, network.id, "NickServ", "SET PASSWD typedpw other")
+
+      assert match?({"typedpw", _}, SessionStateHelpers.pending_auth(SessionStateHelpers.fetch(pid)))
+
+      nick = SessionStateHelpers.nick(SessionStateHelpers.fetch(pid))
+      IRCServer.feed(server, ":irc.test.org MODE #{nick} :+r\r\n")
+      :ok = IRCServer.await_handled(server, 1_000)
+
+      assert visitor_password(visitor, network) == "typedpw"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # A slot dropped with its timer still armed is not dropped: the timer
+    # fires at the old deadline and discards whatever is staged then, for
+    # example an IDENTIFY sent right after the rotation.
+    test "visitor: a committed rotation cancels the staged slot's timer" do
+      %{pid: pid, visitor: visitor, network: network} = visitor_awaiting_identify_r("vtm")
+      ref = SessionStateHelpers.pending_auth_timer(SessionStateHelpers.fetch(pid))
+      assert is_integer(Process.read_timer(ref))
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg({:visitor, visitor.id}, network.id, "NickServ", "SET PASSWD oldpass newpass")
+
+      assert is_nil(SessionStateHelpers.pending_auth_timer(SessionStateHelpers.fetch(pid)))
+      assert Process.read_timer(ref) == false
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "regression: SET EMAIL (non-PASSWD SET) is passthrough — no commit, no staging" do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
 
