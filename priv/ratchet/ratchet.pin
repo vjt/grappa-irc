@@ -135,6 +135,6 @@ deps:Mix.Tasks.Grappa.SetNetworkCaps = 4
 deps:Mix.Tasks.Grappa.UnbindNetwork = 4
 deps:Mix.Tasks.Grappa.UpdateNetworkCredential = 5
 deps:Mix.Tasks.Grappa.WirePin = 2
-handle_call_clauses:Grappa.Session.Server = 79
+handle_call_clauses:Grappa.Session.Server = 78
 handle_info_clauses:Grappa.Session.Server = 69
 state_keys:Grappa.Session.Server = 101

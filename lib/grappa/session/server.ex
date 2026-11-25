@@ -892,8 +892,10 @@ defmodule Grappa.Session.Server do
           # ever connected, process uptime when we died pre-connect.
           started_at: DateTime.t(),
           connected_at: DateTime.t() | nil,
-          # issue 2097 — stamped on 001 RPL_WELCOME, nil until then. NOT a
-          # third liveness axis: the ONLY reader is the CAP NEW re-REQ, which
+          # issue 2097 — stamped on 001 RPL_WELCOME, nil until then. Read
+          # ONLY through `registered/1` (issue 2728), the one "has the network
+          # registered us" question: the verb gate, the JOIN hold, PART, the
+          # keepnick arm, the live-nick publish, and the CAP NEW re-REQ, which
           # must never fire while `AuthFSM` still has a CAP REQ outstanding.
           # An ACK we elicit during negotiation is indistinguishable, to the
           # FSM, from the ACK of ITS request: `auth_fsm.ex` matches ACK in the
@@ -902,9 +904,8 @@ defmodule Grappa.Session.Server do
           # `auth_method: :sasl` and silently drops SASL on `:auto`. The FSM
           # phase lives in the Client process, so this stamp is the cheapest
           # thing Session.Server can read to know that window has closed.
-          # Read with `Map.get` (never `state.registered_at`): a hot-reloaded
-          # pre-2097 process has no such key, and nil degrades to "skip the
-          # re-REQ", which is the safe direction.
+          # A force-reloaded pre-2097 process has no such key; `registered/1`
+          # reads that as registered (issue 2703's rule).
           registered_at: DateTime.t() | nil,
           # #1088 — EVERY accumulator below that is primed by a `:send_*`
           # request also carries a `:reply_to` key: the `socket_ref` of the
@@ -2024,39 +2025,126 @@ defmodule Grappa.Session.Server do
 
   defp maybe_notify_session_phase(_, _), do: :ok
 
-  # Persist-then-send. If the persist fails (validation), the changeset
-  # error reaches the caller without the wire ever being touched — clean
-  # rollback. Reversing the order would be worse: a line the channel saw
-  # but the sender's own scrollback lacks after a refresh.
+  # Issue 2728 — the ONE question "has the network registered us?", asked the
+  # same way everywhere. Not registered = no Client yet (the Backoff-deferred
+  # respawn), or a Client whose 001 has not arrived (`registered_at` still
+  # nil). It is derived, never stored: `client` and `registered_at` already
+  # say it.
   #
-  # issue 2370 — a send whose write fails or stalls costs the CALLER an
-  # error and nothing more; it used to cost the whole session (an
-  # unmatched `{:error, _}` raised, a stuck Client's call exited). Two
-  # residues are deliberate:
+  # issue 2703's absent-key rule is kept: a process with no `registered_at`
+  # key at all predates issue 2097 and registered long ago, so it reads as
+  # registered. That is now the one rule for every reader; the opposite
+  # default some readers used (absent = unregistered) is gone with them.
+  defguardp registered(state)
+            when :erlang.map_get(:client, state) != nil and
+                   not (is_map_key(state, :registered_at) and :erlang.map_get(:registered_at, state) == nil)
+
+  # Issue 2728 — every request this module answers, by what it may do before
+  # 001 (`Grappa.Session.VerbPolicy` names the policies and checks this table
+  # against the clauses at compile time, both ways). Only
+  # `:needs_registered` is read by code: the gate head below.
+  @verb_policy %{
+    # Messages: a row persisted for a line the ircd drops with 451 is a line
+    # the operator reads as sent that never left.
+    send_privmsg: :needs_registered,
+    send_ctcp: :needs_registered,
+    send_notice: :needs_registered,
+    send_statusmsg: :needs_registered,
+    send_e2e: :needs_registered,
+    e2e_ask: :needs_registered,
+    e2e_answer: :needs_registered,
+    # Channel and user operations, and queries whose accumulator would wait
+    # for replies that are never coming.
+    send_topic: :needs_registered,
+    send_topic_clear: :needs_registered,
+    send_mode: :needs_registered,
+    send_umode: :needs_registered,
+    send_op: :needs_registered,
+    send_deop: :needs_registered,
+    send_voice: :needs_registered,
+    send_devoice: :needs_registered,
+    send_ban: :needs_registered,
+    send_unban: :needs_registered,
+    send_kick: :needs_registered,
+    send_invite: :needs_registered,
+    send_whois: :needs_registered,
+    send_whowas: :needs_registered,
+    send_who: :needs_registered,
+    send_names: :needs_registered,
+    send_list_mode: :needs_registered,
+    send_info: :needs_registered,
+    send_version: :needs_registered,
+    send_motd: :needs_registered,
+    send_admin: :needs_registered,
+    send_links: :needs_registered,
+    send_lusers: :needs_registered,
+    refresh_directory: :needs_registered,
+    recover_identity: :needs_registered,
+    send_raw: :needs_registered,
+    send_oper: :needs_registered,
+    # `Networks.disconnect/2` stops the session whatever this answers; the
+    # socket closing is the same upstream outcome as a QUIT nobody read.
+    send_quit: :needs_registered,
+    # A NICK accepted before 001 changed `state.nick` and was then undone by
+    # the 001 reclaim, which reads the configured nick (issue 2745).
+    send_nick: :needs_registered,
+    send_join: :held,
+    send_part: :local_first,
+    set_explicit_away: :desired_state,
+    unset_explicit_away: :desired_state,
+    set_auto_away: :desired_state,
+    unset_auto_away: :desired_state,
+    notify_changed: :desired_state,
+    copy_e2e: :local,
+    # Its `:cancel` arm writes a line, and refuses on its own when not
+    # registered (`dismiss_e2e_request/6`); the other arms are local.
+    e2e_dismiss: :local,
+    directory_refreshing?: :local,
+    list_channels: :local,
+    connection_info: :local,
+    casemapping: :local,
+    statusmsg: :local,
+    presence_snapshot: :local,
+    ignores_changed: :local,
+    list_members: :local,
+    list_member_counts: :local,
+    get_topic: :local,
+    get_channel_modes: :local,
+    get_isupport: :local,
+    get_linelen: :local,
+    get_umodes: :local,
+    get_flood_allowance: :local,
+    get_supported_umodes: :local,
+    get_window_state: :local,
+    session_snapshot: :local,
+    lookup_userhost: :local,
+    decline_invite: :local,
+    refuse_dcc_offer: :local,
+    accept_dcc_offer: :local,
+    list_dcc_offers: :local
+  }
+  @before_compile Grappa.Session.VerbPolicy
+
+  @needs_registered for {tag, :needs_registered} <- @verb_policy, do: tag
+
+  defguardp needs_registered(request)
+            when (is_atom(request) and request in @needs_registered) or
+                   (is_tuple(request) and tuple_size(request) > 0 and elem(request, 0) in @needs_registered)
+
+  # Issue 2728 — the gate. A `:needs_registered` verb is refused here, before
+  # its own clause runs, so nothing it would have done happens: no row
+  # persisted, no accumulator primed, no credential staged, no state
+  # mutated. An ircd answers it with 451 and drops it until 001, and nothing
+  # here handles 451, so writing it anyway is a lie told to the caller.
   #
-  #   * with NO Client at all (`client: nil`, the Backoff-deferred respawn
-  #     window) the send is refused here, before the persist — there is
-  #     nothing to write to, so a row would be a line the operator reads
-  #     as sent that never left. This is a decision, not a necessity:
-  #     the alternative was to keep the row (consistent with the residue
-  #     below) and it can be reversed without touching anything else;
-  #   * a write that fails AFTER the persist (socket gone mid-send, or the
-  #     Client not answering in time) leaves the row in place and says so
-  #     in a warning. On `:timeout` the frame may still reach the wire —
-  #     it waits in the Client's mailbox — so deleting the row would be
-  #     the wrong guess as often as keeping it.
+  # issue 2370 — past the gate, a write that fails AFTER the persist (socket
+  # gone mid-send, or the Client not answering in time) leaves the row in
+  # place and says so in a warning. On `:timeout` the frame may still reach
+  # the wire — it waits in the Client's mailbox — so deleting the row would
+  # be the wrong guess as often as keeping it.
   @impl GenServer
-  def handle_call(request, _, %{client: nil} = state)
-      when elem(request, 0) in [
-             :send_privmsg,
-             :send_ctcp,
-             :send_notice,
-             :send_statusmsg,
-             :send_e2e,
-             :e2e_ask,
-             :e2e_answer
-           ] do
-    {:reply, {:error, :no_socket}, state}
+  def handle_call(request, _, state) when needs_registered(request) and not registered(state) do
+    {:reply, {:error, :not_registered}, state}
   end
 
   def handle_call({:send_privmsg, target, body}, _, state)
@@ -2085,7 +2173,7 @@ defmodule Grappa.Session.Server do
   # services CTCP query never opened a window either — it just gains the source
   # echo now, strictly better; the inbound reply routing is unchanged).
   # (No @impl here — a continuation clause of handle_call/3, whose @impl rides
-  # the no-Client refusal clause above, mirroring the sibling {:send_topic, …}.)
+  # the registration gate above, mirroring the sibling {:send_topic, …}.)
   def handle_call({:send_ctcp, source, ctcp_target, body}, _, state)
       when is_binary(source) and is_binary(ctcp_target) and is_binary(body) do
     line = "PRIVMSG #{ctcp_target} :#{body}"
@@ -2101,7 +2189,7 @@ defmodule Grappa.Session.Server do
   # lines go through `E2ePacer`, so the reply means ACCEPTED: some lines may
   # still be waiting in the pacer when it returns.
   # (No @impl here — a continuation clause of handle_call/3, whose @impl
-  # rides the no-Client refusal clause above.)
+  # rides the registration gate above.)
   def handle_call({:send_e2e, target, verb, lane, {from, to} = addresses, payload, expires_at}, _, state)
       when is_binary(target) and is_atom(verb) and is_atom(lane) and is_binary(from) and is_binary(to) and
              is_binary(payload) and (is_nil(expires_at) or is_integer(expires_at)) do
@@ -2121,12 +2209,12 @@ defmodule Grappa.Session.Server do
   # another of them (`Session.copy_e2e/6` checked both). It is queued and
   # pushed as a peer's message is (`put_e2e_entry/3`), flagged `own`, under
   # our nick and a msgid picked here, and it never goes on IRC — so it
-  # needs no Client, and the no-Client refusal above does not list it. What
+  # needs no Client, and `@verb_policy` files it `:local`. What
   # differs is the refusal: the caller is answered, nothing is counted for
   # the undeliverable notice (a copy refused is simply missing on that
   # device), and no OS push goes out either way (it is our own text).
   # (No @impl here — a continuation clause of handle_call/3, whose @impl
-  # rides the no-Client refusal clause above.)
+  # rides the registration gate above.)
   def handle_call({:copy_e2e, from_did, %E2eKeys.Device{} = sibling, verb, payload}, _, state)
       when is_binary(from_did) and is_atom(verb) and is_binary(payload) do
     attrs = %{own: true, sender: state.nick, from_did: from_did, verb: verb, msgid: E2e.new_msgid(), payload: payload}
@@ -2137,7 +2225,7 @@ defmodule Grappa.Session.Server do
   # (`Session.ask_e2e/5`), or answers the peer's waiting request by asking
   # back. The line goes before the row (`send_consent/6`).
   # (No @impl here — a continuation clause of handle_call/3, whose @impl
-  # rides the no-Client refusal clause above, which lists this request.)
+  # rides the registration gate above, which refuses this request until 001.)
   def handle_call({:e2e_ask, target, from, payload}, _, state)
       when is_binary(target) and is_binary(from) and is_binary(payload) do
     now = DateTime.utc_now()
@@ -2151,7 +2239,7 @@ defmodule Grappa.Session.Server do
 
   # issue 2486 — the user accepts or refuses the peer's waiting request
   # (`Session.answer_e2e/5`), a refusal with or without a device's line
-  # (`answer_line/2`). Listed in the no-Client refusal above.
+  # (`answer_line/2`). Refused by the registration gate above until 001.
   def handle_call({:e2e_answer, id, answer, line}, _, state)
       when is_integer(id) and (answer == :refuse or (answer == :accept and is_tuple(line))) do
     now = DateTime.utc_now()
@@ -2166,7 +2254,7 @@ defmodule Grappa.Session.Server do
   end
 
   # issue 2486 — the user dismisses a request (`Session.dismiss_e2e/4`). NOT
-  # in the no-Client refusal above: only a CANCEL needs a socket, and
+  # refused by the registration gate above: only a CANCEL writes a line, and
   # dismissing an answer or an expired request must work while upstream is
   # down.
   def handle_call({:e2e_dismiss, id, line}, _, state) when is_integer(id) do
@@ -2197,7 +2285,7 @@ defmodule Grappa.Session.Server do
   # fire. Routing through the choke point anyway is what keeps this door
   # participating automatically if the interceptor ever learns a new shape.
   # (No @impl here — a continuation clause of handle_call/3, whose @impl rides
-  # the no-Client refusal clause above.)
+  # the registration gate above.)
   def handle_call({:send_notice, source, target, body}, _, state)
       when is_binary(source) and is_binary(target) and is_binary(body) do
     line = "NOTICE #{target} :#{body}"
@@ -2231,7 +2319,7 @@ defmodule Grappa.Session.Server do
   # wrong, and it is the tag this facade's other shape guards already use.
   #
   # (No @impl here — a continuation clause of handle_call/3, whose @impl rides
-  # the no-Client refusal clause above.)
+  # the registration gate above.)
   def handle_call({:send_statusmsg, target, body}, _, state)
       when is_binary(target) and is_binary(body) do
     line = "PRIVMSG #{target} :#{body}"
@@ -2494,26 +2582,20 @@ defmodule Grappa.Session.Server do
     end
   end
 
-  # Channel directory (#84) refresh trigger. Three clauses, ordered:
+  # Channel directory (#84) refresh trigger. Two clauses, ordered, behind
+  # the registration gate (issue 2728: before 001 there is nothing to send
+  # `LIST` to, and the gate refuses before any timer is armed):
   #
-  #   1. `client: nil` (and no refresh in flight) — the upstream socket
-  #      isn't connected yet (pre-001, parked, or mid-reconnect). Reject
-  #      with `{:error, :not_connected}` BEFORE touching the DB or arming a
-  #      timer; there's nothing to send `LIST` to.
-  #   2. `run: nil` (client present) — the happy path. Put
+  #   1. `run: nil` — the happy path. Put
   #      `LIST` on the wire FIRST (so a transport error short-circuits with
   #      no DB churn), then arm the watchdog and record the in-flight
   #      tracker. It touches NO row: issue 2046 deferred the whole write to
   #      the 323, so the prior snapshot stays servable until the new one is
   #      complete. The streamed 321/322/323 capture is Task C3; the watchdog
   #      handler is `:directory_refresh_timeout` below.
-  #   3. catch-all (`run` non-nil) — a refresh is already
+  #   2. catch-all (`run` non-nil) — a refresh is already
   #      streaming. The run's presence IS the guard; reply
   #      `{:error, :already_refreshing}` and leave the in-flight run untouched.
-  def handle_call(:refresh_directory, _, %{directory: %DirectoryIngest{run: nil}, client: nil} = state) do
-    {:reply, {:error, :not_connected}, state}
-  end
-
   def handle_call(:refresh_directory, _, %{directory: %DirectoryIngest{run: nil} = ingest} = state) do
     case Client.send_line(state.client, "LIST\r\n") do
       :ok ->
@@ -3439,11 +3521,8 @@ defmodule Grappa.Session.Server do
     # Issue 2721 — before 001 we are in no upstream channel, so there is
     # nothing for a PART to leave: the local cleanup above IS the whole PART,
     # and the line would only earn a 451 from an ircd that has not registered
-    # us yet. The same `registration_pending?/1` gate that holds a JOIN.
-    if registration_pending?(state) do
-      Logger.info("PART not sent upstream: registration still pending", channel: inspect(channel))
-      {:noreply, state}
-    else
+    # us yet. The same `registered/1` question that holds a JOIN (issue 2728).
+    if registered(state) do
       case Client.send_part(state.client, channel, reason) do
         :ok ->
           {:noreply, state}
@@ -3467,6 +3546,9 @@ defmodule Grappa.Session.Server do
 
           {:noreply, state}
       end
+    else
+      Logger.info("PART not sent upstream: registration still pending", channel: inspect(channel))
+      {:noreply, state}
     end
   end
 
@@ -3893,8 +3975,16 @@ defmodule Grappa.Session.Server do
         state
       )
       when is_binary(welcomed_nick) do
+    # issue 2728 — stamp FIRST: everything below writes to a registered link,
+    # and reads `registered/1` while doing it. Stamped at the end, the perform
+    # list, the away re-assert and the join plan all ran on a state that
+    # still said "not registered". `Map.put`, never `%{state | registered_at:
+    # ...}`: a live pre-2097 process hot-reloaded mid-session has no such key
+    # and the map-update form would KeyError on its next 001 (the #216
+    # contract).
     state =
       state
+      |> Map.put(:registered_at, DateTime.utc_now())
       |> run_perform_and_identify(welcomed_nick)
       # GH #417 — re-assert any active away to the fresh (away-blind) upstream
       # connection before autojoin. No-op when :present.
@@ -3974,13 +4064,9 @@ defmodule Grappa.Session.Server do
     # nick we actually registered as (may differ from the configured one).
     SessionLog.emit(:registered, %{state | nick: welcomed_nick}, [])
 
-    # issue 2097 — stamp "the CAP negotiation window is closed" for the CAP
-    # NEW re-REQ gate. `Map.put`, never `%{state | registered_at: ...}`: a
-    # live pre-2097 process hot-reloaded mid-session has no such key and the
-    # map-update form would KeyError on its next 001 (the #216 contract).
     next_state = %{state | connection_stable_timer: stable_timer}
 
-    {:noreply, registered} = delegate(msg, Map.put(next_state, :registered_at, DateTime.utc_now()))
+    {:noreply, registered} = delegate(msg, next_state)
 
     # issue 2597 — from here the session HOLDS its nick upstream, so the
     # registry copy may say so. Read off the delegated state, whose nick is
@@ -4475,7 +4561,7 @@ defmodule Grappa.Session.Server do
   # a wrong roster — `EventRouter`'s fold reads a run of any length and a
   # seed never denies a grade below the lowest one it names.
   #
-  # 🔴 GATED ON `registered_at`, and the gate is load-bearing, not hygiene.
+  # 🔴 GATED ON `registered/1`, and the gate is load-bearing, not hygiene.
   # `AuthFSM` matches a CAP ACK in all three `:awaiting_cap_ack*` phases and
   # reads it as the answer to ITS request: an ACK elicited by us mid-
   # negotiation carries no "sasl", so the FSM would call `cap_unavailable/1`
@@ -4496,7 +4582,7 @@ defmodule Grappa.Session.Server do
       |> MapSet.intersection(@tracked_caps)
       |> MapSet.difference(state.caps_active)
 
-    maybe_re_req_caps(state, Map.get(state, :registered_at), Enum.sort(wanted))
+    maybe_re_req_caps(state, Enum.sort(wanted))
 
     {:noreply, state}
   end
@@ -4861,6 +4947,10 @@ defmodule Grappa.Session.Server do
 
   # Existing behavior — persist scrollback row, broadcast on per-channel
   # PubSub topic, send the wire line. Reply carries the persisted row.
+  # Persist-then-send: if the persist fails (validation), the changeset
+  # error reaches the caller without the wire ever being touched — clean
+  # rollback. Reversing the order would be worse: a line the channel saw
+  # but the sender's own scrollback lacks after a refresh.
   # BUGHUNT-1 A: a body larger than the wire-frame budget (LINELEN -
   # relayed-frame overhead, incl. the worst-case `:nick!user@host `
   # source prefix the server prepends — #246) is auto-split into N
@@ -6304,7 +6394,7 @@ defmodule Grappa.Session.Server do
       not enabled ->
         state |> cancel_keep_nick() |> Map.put(:keep_nick, false)
 
-      Map.get(state, :registered_at) != nil ->
+      registered(state) ->
         state |> Map.put(:keep_nick, true) |> arm_keep_nick_tick(0)
 
       true ->
@@ -6534,16 +6624,16 @@ defmodule Grappa.Session.Server do
   # seam that granted it the first time — so a NAK, a silent drop or a
   # hostile reply all leave us exactly where the DEL left us.
   #
-  # First clause is the phase gate (nil `registered_at` = CAP negotiation may
+  # First clause is the phase gate (not registered = CAP negotiation may
   # still be open; see the CAP NEW handler for why asking there can kill the
   # session). Second is the empty ask — a NEW that re-advertises only caps we
   # do not track, or already hold, sends nothing at all rather than an empty
   # `CAP REQ :`.
-  @spec maybe_re_req_caps(t(), DateTime.t() | nil, [String.t()]) :: :ok
-  defp maybe_re_req_caps(_, nil, _), do: :ok
-  defp maybe_re_req_caps(_, _, []), do: :ok
+  @spec maybe_re_req_caps(t(), [String.t()]) :: :ok
+  defp maybe_re_req_caps(state, _) when not registered(state), do: :ok
+  defp maybe_re_req_caps(_, []), do: :ok
 
-  defp maybe_re_req_caps(state, _, caps) do
+  defp maybe_re_req_caps(state, caps) do
     maybe_log_send_failure("cap_re_req", Client.send_line(state.client, AuthFSM.cap_req(caps)))
   end
 
@@ -6980,7 +7070,7 @@ defmodule Grappa.Session.Server do
         next_state.network_id,
         next_state.nick,
         next_state.subject_label,
-        Map.get(next_state, :registered_at) != nil
+        registered(next_state)
       )
 
     :ok = Broadcaster.to_user(next_state, SessionWire.own_nick_changed(next_state.network_id, next_nick))
@@ -8529,9 +8619,9 @@ defmodule Grappa.Session.Server do
   @spec join_channels(t(), [String.t()], String.t() | nil) ::
           {:ok | {:error, :invalid_line | :timeout | :not_connected}, t()}
   defp join_channels(state, channels, key) do
-    if registration_pending?(state),
-      do: hold_until_registered(state, channels, key),
-      else: write_join(state, channels, key)
+    if registered(state),
+      do: write_join(state, channels, key),
+      else: hold_until_registered(state, channels, key)
   end
 
   # issue 2703, widening issue 2114 — NOT REGISTERED YET. An ircd answers a
@@ -8593,16 +8683,6 @@ defmodule Grappa.Session.Server do
         reject_invalid_join(state, channels)
     end
   end
-
-  # issue 2703 — `{:ok, nil}`, never `Map.get(state, :registered_at) == nil`.
-  # The 001 handler stamps the key before the join plan fires, and nothing
-  # clears it, because this process dies with its Client. A process hot-loaded
-  # from before issue 2097 has no key at all; it registered long ago, so the
-  # absent key must keep its JOINs going straight out. The other readers of
-  # the stamp take an absent key as nil because nil is their safe direction;
-  # here nil would hold JOINs for a 001 that already happened.
-  @spec registration_pending?(t()) :: boolean()
-  defp registration_pending?(state), do: Map.fetch(state, :registered_at) == {:ok, nil}
 
   @spec write_join(t(), [String.t()], String.t() | nil) ::
           {:ok | {:error, :invalid_line | :timeout | :not_connected}, t()}
@@ -9406,7 +9486,8 @@ defmodule Grappa.Session.Server do
 
   # issue 2486 — what a dismissal sends: nothing for an answer, an expired
   # request or a lapsed one; a CANCEL for a live request we asked, which
-  # needs the device's line and a socket.
+  # needs the device's line and a registered link (issue 2728: the same
+  # refusal the gate gives the verbs it covers whole).
   @spec dismiss_e2e_request(
           t(),
           E2eRequest.t(),
@@ -9416,7 +9497,14 @@ defmodule Grappa.Session.Server do
           DateTime.t()
         ) ::
           {:ok, t()}
-          | {:error, :bad_request | :no_socket | :too_large | :rate_limited | :requests_full | :db_unavailable}
+          | {:error,
+             :bad_request
+             | :not_registered
+             | :no_socket
+             | :too_large
+             | :rate_limited
+             | :requests_full
+             | :db_unavailable}
   defp dismiss_e2e_request(state, _, :none, plan, _, now) do
     with {:ok, outcome} <- E2eRequests.commit(state.subject, state.network_id, plan, now) do
       :ok = announce_e2e_request(state, outcome, now)
@@ -9425,7 +9513,7 @@ defmodule Grappa.Session.Server do
   end
 
   defp dismiss_e2e_request(_, _, :cancel, _, nil, _), do: {:error, :bad_request}
-  defp dismiss_e2e_request(%{client: nil}, _, :cancel, _, _, _), do: {:error, :no_socket}
+  defp dismiss_e2e_request(state, _, :cancel, _, _, _) when not registered(state), do: {:error, :not_registered}
 
   defp dismiss_e2e_request(state, row, :cancel, plan, line, now) do
     with {:ok, _, _, state} <- send_consent(state, row.peer, :cancel, user_line(line), plan, now), do: {:ok, state}

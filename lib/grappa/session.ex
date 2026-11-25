@@ -246,8 +246,14 @@ defmodule Grappa.Session do
   answering in time (issue 2370) — the same atom, and the same 504, as
   the REST → Session.Server call timing out: in both cases the outcome
   is unknown, not refused.
+
+  `:not_registered` (issue 2728) is the session refusing BEFORE any write:
+  the network has not registered us yet (no Client, or no 001), and an ircd
+  drops every non-registration line from an unregistered client with 451.
+  Nothing was persisted or sent, so a caller may retry once connected
+  (REST 503 / channel `not_registered`).
   """
-  @type send_transport_error :: :no_socket | :closed | :timeout | :inet.posix()
+  @type send_transport_error :: :not_registered | :no_socket | :closed | :timeout | :inet.posix()
 
   @typedoc """
   issue 2430 — every way `send_e2e/8` refuses a message, named once so
@@ -255,6 +261,7 @@ defmodule Grappa.Session do
   """
   @type e2e_send_error ::
           :no_session
+          | :not_registered
           | :no_socket
           | :timeout
           | :invalid_line
@@ -271,6 +278,7 @@ defmodule Grappa.Session do
   """
   @type e2e_consent_error ::
           :no_session
+          | :not_registered
           | :no_socket
           | :timeout
           | :invalid_line
@@ -615,14 +623,14 @@ defmodule Grappa.Session do
 
   Distinct from the `call_session/*` facades: a missing session pid maps
   to `{:error, :not_connected}` (not `:no_session`) — the directory
-  surface only cares whether there's a live upstream to `LIST`, and the
-  Server returns the SAME `:not_connected` when the pid exists but the
-  IRC socket isn't up yet (`client: nil`). `{:error, :already_refreshing}`
+  surface only cares whether there's a live upstream to `LIST`. A session
+  the network has not registered yet answers `{:error, :not_registered}`
+  (issue 2728), like every verb that writes a line. `{:error, :already_refreshing}`
   guards against a concurrent refresh: the in-flight tracker is single-slot
   per session.
   """
   @spec refresh_directory(subject(), integer()) ::
-          :ok | {:error, :not_connected | :already_refreshing}
+          :ok | {:error, :not_connected | :not_registered | :already_refreshing}
   def refresh_directory(subject, network_id)
       when is_subject(subject) and is_integer(network_id) do
     case whereis(subject, network_id) do
@@ -669,11 +677,18 @@ defmodule Grappa.Session do
   #561 pt3); an already-`+r` session has nothing to do
   (`:already_identified`); a concurrent attempt is refused
   (`:in_progress`). A missing live pid maps to `:not_connected` (same as
-  `refresh_directory/2`: no upstream, nothing to recover against).
+  `refresh_directory/2`: no upstream, nothing to recover against); a
+  session the network has not registered yet answers `:not_registered`.
   """
   @spec recover_identity(subject(), integer()) ::
           :ok
-          | {:error, :not_connected | :not_visitor | :nothing_to_recover | :already_identified | :in_progress}
+          | {:error,
+             :not_connected
+             | :not_registered
+             | :not_visitor
+             | :nothing_to_recover
+             | :already_identified
+             | :in_progress}
   def recover_identity(subject, network_id)
       when is_subject(subject) and is_integer(network_id) do
     case whereis(subject, network_id) do
