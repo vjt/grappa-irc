@@ -306,8 +306,10 @@ defmodule Grappa.Application do
       # BEFORE the Endpoint, because `init/1` publishes the mode-2 arm gate
       # and the doors that reach the manager ahead of Bootstrap are web ones:
       # the REST callers of `Grappa.SpawnOrchestrator`, and the admin settings
-      # write that calls `arm/1`. A plan resolved before the gate is published
-      # reads the not-armed default and HOLDS the session, and the held
+      # write that calls `arm/1`. A mode-2 plan with no admin `server_source`
+      # pin and no granted reservation (`Vhosts.effective_source/3` checks
+      # both first), resolved before the gate is published, reads the
+      # not-armed default and HOLDS the session, and the held
       # session's `credential_failer` marks the credential `:failed`, which is
       # terminal. (`grappa add-network`'s hop into the live node,
       # `Grappa.Release.LiveNode`, arrives over distribution and no child
