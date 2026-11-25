@@ -19,9 +19,17 @@
 //       with no modal and no error toast left on screen.
 //   E2. A cancel sends neither request and the network stays parked.
 //
-// Mutants E1 turns red: a verb that skips the reconnect (the POST 404s, the
-// section never returns); one that reconnects and never joins (no channel row);
-// a confirm that does not name the reconnect (the body assertion).
+// Mutants E1 turns red, and how each was established (one was run, one is the
+// pre-fix bundle's own red, one is a reading):
+//   * a verb that skips the reconnect — RUN in the browser: red where the
+//     network section should come back (0 sections after 15 s), because the
+//     POST alone opens nothing.
+//   * a confirm that does not name the reconnect — EQUIVALENT to the red run on
+//     the pre-fix bundle, where E1 and E2 both failed at the body assertion
+//     (received `Join #i2719-…?`).
+//   * a verb that reconnects and never joins — by READING, not run: the section
+//     comes back, but the channel row's count-1 never holds and
+//     `traffic.joins` stays 0.
 //
 // What this cannot prove is the stale-store gap: a store that still reads
 // `connected` for a network the server has parked sends the POST alone and
