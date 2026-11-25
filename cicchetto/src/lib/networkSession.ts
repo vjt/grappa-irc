@@ -22,7 +22,9 @@ import type { ConnectionState, Network } from "./api";
 // NOT the Sidebar's rule, and not `isNetworkParked`. The Sidebar greys only
 // `failed`, because a `parked` network has left it (issue 1985) and has no
 // header left to grey; `networkParked.ts` answers "is it in the UI at all".
-// Each of the three asks a different question of the same column.
+// Each of the three asks a different question of the same column. The
+// Sidebar's `NETWORK_GREYED_STATES` takes this same `satisfies Record` shape,
+// so every multi-member classifier over `ConnectionState` is one shape.
 const NO_LIVE_SESSION = {
   connected: false,
   failing: false,
