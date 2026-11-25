@@ -121,12 +121,12 @@ defmodule GrappaWeb.ChannelsController do
   in the synthetic pseudo-row (state=:failed).
 
   issue 2114 / issue 2703 — a JOIN that arrives before the session has
-  registered (no socket yet in the reconnect backoff, or a socket that is
+  registered (no Client yet in the reconnect backoff, or a socket that is
   up before 001) is 202 as well, not 400: the session holds it and sends
-  it at 001, and the `:pending` window this returns behind is the honest
-  state either way. A `DELETE` for the same channel before then cancels
-  the held JOIN. The 400 `not_connected` is left to the case the session
-  cannot outlive.
+  it at 001 (or at the #347 +r defer), and the `:pending` window this
+  returns behind is the honest state either way. A `DELETE` for the same
+  channel before the JOIN goes out cancels it. The 400 `not_connected` is
+  left to the case the session cannot outlive.
   """
   @spec create(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
