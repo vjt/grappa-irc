@@ -1,7 +1,7 @@
 import { type Component, For, onCleanup, Show } from "solid-js";
 import CloseButton from "./CloseButton";
 import EncryptedChatMenu, { openEncryptedChatMenu } from "./EncryptedChatMenu";
-import type { Network } from "./lib/api";
+import type { ConnectionState, Network } from "./lib/api";
 import { ownNickForNetwork } from "./lib/api";
 import { awayByNetwork } from "./lib/awayStatus";
 import { channelKey } from "./lib/channelKey";
@@ -95,21 +95,33 @@ import WindowBadges, { EncryptedUnreadBadge } from "./WindowBadges";
 //   per-window `:parked` events from `Session.Server.terminate/2`; cic
 //   derives the cascade from the network-level state.
 
-// #1675 — `failing` is deliberately NOT in this set. Greyed means "no
+// #1675 — `failing` is deliberately NOT greyed. Greyed means "no
 // live session; the way back is a reconnect action", and a failing
 // network HAS one, retrying on its own — greying it would disable the
 // compose box on every network that blinks. The state is still visible:
 // HomePane routes anything that is not `connected` to the disconnected
 // row, which renders the word AND `connection_state_reason`.
 //
-// issue 1985 — `parked` is no longer in this set either, and for the
-// opposite reason: it does not need greying because it does not RENDER.
-// A parked network leaves the sidebar entirely (`isNetworkParked`, the
-// shared predicate in lib/networks.ts), so the only network state that can
-// still reach the cascade below is `failed`. Leaving `parked` here would be
-// a second, unreachable statement of the parked policy, and the next reader
-// would take it for the live one.
-const NETWORK_GREYED_STATES = new Set(["failed"]);
+// issue 1985 — `parked` is not greyed either, and for the opposite reason:
+// it does not need greying because it does not RENDER. A parked network
+// leaves the sidebar entirely (`isNetworkParked`, lib/networkParked.ts), so
+// the only network state that can still reach the cascade below is `failed`.
+// Its `false` below states that the greying does not apply; the parked policy
+// itself lives in `isNetworkParked` alone.
+//
+// issue 2719 — a `Record` checked with `satisfies`, not a `Set` of the members
+// that grey: a fifth connection state the server adds is then a tsc error HERE
+// until somebody decides whether it greys, where a `Set` would file it under
+// "not greyed" without a word. The same shape as `lib/networkSession.ts`'s
+// `hasNoLiveSession`, so every multi-member classifier over
+// `ConnectionState` takes one shape; the two answer different questions of
+// the same column, and the answers differ only at `parked`.
+const NETWORK_GREYED_STATES = {
+  connected: false,
+  failing: false,
+  parked: false,
+  failed: true,
+} as const satisfies Record<ConnectionState, boolean>;
 
 // #96 — a row's state, spoken. Every non-live sidebar row is rendered muted +
 // italic and NOTHING else: a screen reader gets no signal at all, and the
@@ -154,7 +166,7 @@ const Sidebar: Component<Props> = (props) => {
   // This is the narrow that made `networkReason`'s de-narrowing inert — the
   // header `title` below reaches it only through `isNetworkGreyed`, i.e.
   // through here. WHO the rule applies to changes; WHAT it is does not:
-  // `NETWORK_GREYED_STATES` is still `{failed}`, so `parked` (already hidden)
+  // `NETWORK_GREYED_STATES` still greys `failed` alone, so `parked` (already hidden)
   // and `failing` (#1675, retrying on its own) stay out for both kinds.
   //
   // #96 — returns the STATE WORD, not a boolean: the greyed treatment is
@@ -166,7 +178,7 @@ const Sidebar: Component<Props> = (props) => {
   const networkGreyedState = (slug: string): string | null => {
     const net = networkBySlug(slug);
     if (net === undefined) return null;
-    return NETWORK_GREYED_STATES.has(net.connection_state) ? net.connection_state : null;
+    return NETWORK_GREYED_STATES[net.connection_state] ? net.connection_state : null;
   };
 
   const isNetworkGreyed = (slug: string): boolean => networkGreyedState(slug) !== null;

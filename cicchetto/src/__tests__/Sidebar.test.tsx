@@ -731,7 +731,7 @@ describe("Sidebar", () => {
     // reach the operator by four different senses: the colour (class), the
     // cascade onto the rows under it, the WHY (tooltip) and the announced word
     // (sr-only). Nothing here changes WHICH states grey — `NETWORK_GREYED_STATES`
-    // is still `{failed}` on this component — only WHO the rule applies to.
+    // still greys `failed` alone on this component — only WHO the rule applies to.
     it("a FAILED VISITOR network header gets .sidebar-network-greyed, same as a user's (issue 2222)", () => {
       mockNetworkKind = { freenode: "visitor" };
       mockNetworkConnectionState = { freenode: "failed" };

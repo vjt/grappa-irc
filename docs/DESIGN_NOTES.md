@@ -9028,7 +9028,10 @@ cic-only slice does not run.
 - `EncryptedChatPane`'s searchable filter (`privmsg || action`): it sorts the
   rows that pane synthesizes itself, which a server kind cannot reach.
 - Connection-state sets (`NETWORK_GREYED_STATES` in Sidebar and ComposeBox,
-  still `Set<string>`): a different closed set, outside issue 2693.
+  `Set<string>` when this entry was written): a different closed set, outside
+  issue 2693. Converted since, by `#2719`: ComposeBox's became
+  `lib/networkSession.ts`'s `hasNoLiveSession` and the Sidebar's kept its
+  name, both a `satisfies Record<ConnectionState, boolean>`.
 
 `isPresenceKind` had no production importer and is gone, with the 18 mock lines
 that restated it in 17 test files.
@@ -9758,10 +9761,16 @@ reconnected: its session is alive and retrying, and the hold covers it.
   the window-close park PATCH, the CTCP menu, the mute PUT, a dozen E2E
   actions) are not this change: issue 2726. `declineInvite`'s stays, argued in
   its own comment.
-* The Sidebar's `{failed}` and `isNetworkParked` stay their own rules. Each
+* The Sidebar's greying rule and `isNetworkParked` stay their own rules. Each
   asks a different question of the same column (greyed in place / in the UI at
-  all / has a session), and `#2693b` already lists the Sidebar's Set as
-  unconverted.
+  all / has a session). The Sidebar's `NETWORK_GREYED_STATES` (`failed` alone)
+  takes `hasNoLiveSession`'s shape, a `Record<ConnectionState, boolean>` with
+  `satisfies`, so every multi-member classifier over `ConnectionState` in cic
+  is a record keyed by it (the admin glyph map already was). `isNetworkParked`
+  is `=== "parked"`, a single-member test, which `#2693b` exempts. This
+  replaces the connection-state bullet of `#2693b`'s "Not converted" list,
+  which now points here. The first cut kept the Sidebar's `Set` for a reason
+  the hoist had retired; w2's review of PR 2747 (F2).
 
 ### Measured
 
