@@ -67,6 +67,8 @@ defmodule Grappa.Application do
           identd: keyword()
         }
 
+  @boot_flags_key {__MODULE__, :boot_flags}
+
   @impl Application
   def start(_, _) do
     # Boot-time captcha config injection — read :admission keys once,
@@ -211,11 +213,13 @@ defmodule Grappa.Application do
       |> Application.get_env(Grappa.Session.Server, [])
       |> Grappa.ServerSettings.boot()
 
-    # issue 2697 — the four flags that shape the tree are read ONCE, here:
-    # `children/1` builds the tree from them, and the post-start Uploads seed
-    # in `start_tree/1` must see the SAME `start_endpoint` the tree was built
-    # with.
-    start_tree(boot_flags())
+    # issue 2697 — the four flags that shape the tree are read ONCE, here,
+    # and recorded: `children/1` builds the tree from them, the post-start
+    # Uploads seed in `start_tree/1` must see the SAME `start_endpoint` the
+    # tree was built with, and `boot_flags/0` answers with this record.
+    flags = read_boot_flags()
+    :ok = :persistent_term.put(@boot_flags_key, flags)
+    start_tree(flags)
   end
 
   # issue 2697 — public so the child ORDER is testable against the list the
@@ -701,14 +705,24 @@ defmodule Grappa.Application do
     [strategy: :one_for_one, name: Grappa.Supervisor, max_restarts: 80, max_seconds: 120]
   end
 
-  # issue 2697 — the boot-time read of the four flags `children/1` takes.
-  # Defaults are the production behaviour: every optional child on except
-  # identd, which is off unless the operator configures it. Public for the
-  # same reason as `children/1`: the order test proves the RUNNING tree is
-  # `children(boot_flags())`, without restating these four reads.
+  # issue 2697 — the flags this node's tree was STARTED with, as `start/2`
+  # recorded them, and never a fresh read of the env. The env is global and
+  # stays writable after boot: `Mix.Tasks.Grappa.Boot.start_app_silent/0`
+  # puts `:start_endpoint` and `:start_bootstrap` to false, and on a node
+  # that is already running (the test suite's, through the async
+  # `create_user_test.exs`) the tree it would describe was never started.
+  # No default on the read: a node whose `start/2` never ran has no tree to
+  # describe. Public for the same reason as `children/1`: the order test
+  # proves the RUNNING tree is `children(boot_flags())`.
   @doc false
   @spec boot_flags() :: boot_flags()
-  def boot_flags do
+  def boot_flags, do: :persistent_term.get(@boot_flags_key)
+
+  # The boot-time read itself, done once by `start/2`. Defaults are the
+  # production behaviour: every optional child on except identd, which is
+  # off unless the operator configures it.
+  @spec read_boot_flags() :: boot_flags()
+  defp read_boot_flags do
     %{
       start_bootstrap: Application.get_env(:grappa, :start_bootstrap, true),
       start_endpoint: Application.get_env(:grappa, :start_endpoint, true),

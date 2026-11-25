@@ -83,6 +83,12 @@ defmodule Grappa.ApplicationChildOrderTest do
         |> Enum.map(fn {id, _, _, _} -> id end)
         |> Enum.reverse()
 
+      # `boot_flags/0` is what `start/2` recorded, not the env as it reads
+      # now. The env does not stay put: `create_user_test.exs` (async) runs
+      # `Mix.Tasks.Grappa.Boot.start_app_silent/0`, which turns
+      # `:start_endpoint` off on this already-running node. Built from a
+      # re-read, the list lacked the Endpoint whenever that test ran first
+      # (CI run 45533940717, seed 504634).
       built = ids(App.children(App.boot_flags()))
 
       assert running == built,

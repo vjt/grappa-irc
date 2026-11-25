@@ -28,8 +28,9 @@ defmodule Mix.Tasks.Grappa.Boot do
   reload has no business demanding a full stop/start cycle for a
   one-off DB mutation.
 
-  `Grappa.Application.boot_flags/0` is where the `:start_bootstrap` /
-  `:start_endpoint` flags are read; their contracts are the comments
+  `Grappa.Application.start/2` reads the `:start_bootstrap` /
+  `:start_endpoint` flags once, at boot, and records them for
+  `Grappa.Application.boot_flags/0`; their contracts are the comments
   above `bootstrap_child/1` and `endpoint_child/1` in the same module.
   """
   use Boundary, top_level?: true
