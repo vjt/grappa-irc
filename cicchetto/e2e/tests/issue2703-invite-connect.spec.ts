@@ -78,7 +78,15 @@ async function expectAttachedThenAsked(
 
 // Step 3: the window is a JOINED row (a pending one is a pseudo-row carrying
 // `data-window-state`), and it is the one in focus.
+//
+// Count-1 first, the issue2424 / cp15-b6 barrier. `confirmModalYes` only
+// clicks, so right after it the POST is in flight and no row exists: the
+// count-0 below would hold at once, and `selected` alone is satisfied by the
+// pending pseudo-row, which takes focus on the 202. Once a row has existed, 0
+// on the pending intersection means it retired to joined; a row that vanished
+// instead fails the `selected` that follows.
 async function expectJoinedAndSelected(page: Page, channel: string): Promise<void> {
+  await expect(sidebarWindow(page, OFFERED, channel)).toHaveCount(1, { timeout: 15_000 });
   await expect(
     sidebarWindow(page, OFFERED, channel).and(page.locator("[data-window-state]")),
   ).toHaveCount(0, { timeout: 15_000 });
