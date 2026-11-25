@@ -10010,11 +10010,16 @@ rotated or staged.
   sub-machine door (`send_outbound/3`) pass the `Client` result directly.
 - **`:timeout` is not a write.** Its frame waits in the Client's mailbox and
   may still go out (issue 2370), so the outcome is unknown. Unknown does not
-  rotate: if the frame did get through, the stored password is the old one
-  and retyping it into the network's password field (#124) repairs it, the
-  same repair as for a change services refused. Committing on `:timeout`
-  instead would store a password services may never have seen, with nothing
-  to tell the two cases apart afterwards.
+  rotate or stage. A rotation whose frame did get through leaves the stored
+  password the old one, and retyping it into the network's password field
+  (#124) repairs it, the same repair as for a change services refused. A
+  staging line (IDENTIFY, REGISTER) whose frame did get through meets its
+  `+r` with no slot, so the secret services accepted is not stored: a
+  visitor's IDENTIFY binds nothing and a REGISTER commits nothing, until the
+  line is sent again or the secret is typed into that same field.
+  Committing or staging on `:timeout` instead would store a password
+  services may never have seen, with nothing to tell the two cases apart
+  afterwards.
 - **A committed rotation supersedes the staged identify slot.** The 001
   built-in IDENTIFY stages the secret it sent and waits for its `+r`. A SET
   PASSWD or RESETPASS that commits inside that window made the staged secret
@@ -10025,7 +10030,10 @@ rotated or staged.
   so the slot stays.
 - **The capture reads no phase.** Before 001 every user door is refused by
   the gate, and the 001 handler stamps `registered_at` before its perform
-  pass, so a check inside the capture would have nothing left to refuse.
+  pass. The one secret-bearing line still written before 001 is
+  GhostRecovery's GHOST (on a registration 433, through `send_outbound/3`),
+  and it carries the stored secret, so the slot it stages can only confirm
+  what is already stored.
 
 ### Measured
 
