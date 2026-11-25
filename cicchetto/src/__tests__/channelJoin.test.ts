@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../lib/api";
+import { dismissJoinToast, joinToasts, joinToastText } from "../lib/channelJoin";
 import { canonicalChannel, channelKey } from "../lib/channelKey";
 import { acceptConfirm, confirmRequest, dismissConfirm } from "../lib/confirmDialog";
+import { friendlyApiError } from "../lib/friendlyApiError";
+import { _setScheduleExpiryForTest } from "../lib/toasts";
 
 // #648 — confirmJoinChannel is the verb behind a click-to-join `#channel`
 // affordance in scrollback. It REUSES the same join primitive as compose.ts
@@ -57,7 +61,14 @@ beforeEach(() => {
   windowStateByChannelMock.mockReturnValue({});
   tokenMock.mockReturnValue("tok");
   dismissConfirm();
+  _setScheduleExpiryForTest(() => {});
+  for (const t of joinToasts()) dismissJoinToast(t.id);
 });
+
+// Drains the verb's awaits: the REST call(s), then the continuation.
+const settle = async (): Promise<void> => {
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+};
 
 describe("confirmJoinChannel — already joined (#648)", () => {
   it("switches straight to the window with NO confirm and NO join (asking to join an open window is noise)", async () => {
@@ -127,6 +138,58 @@ describe("confirmJoinChannel — not joined (#648)", () => {
     acceptConfirm();
     await Promise.resolve();
     expect(postJoinMock).not.toHaveBeenCalled();
+  });
+});
+
+// issue 2719 — a join that fails is told to the person who asked for it.
+// `performJoin` used to `console.warn` and nothing else, on the premise that
+// its catch saw only "401 / network down"; a 404 from a network with no
+// session reached it too, and the person who clicked saw nothing at all.
+describe("a failed join raises a toast (issue 2719)", () => {
+  it("names the channel, the network and the server's refusal, on the confirm door", async () => {
+    const err = new ApiError(404, "not_found");
+    postJoinMock.mockRejectedValueOnce(err);
+    const { confirmJoinChannel } = await import("../lib/channelJoin");
+    confirmJoinChannel(SLUG, "#Sniffo");
+    acceptConfirm();
+    await settle();
+
+    expect(joinToasts()).toHaveLength(1);
+    const [toast] = joinToasts();
+    expect(toast && joinToastText(toast)).toBe(
+      `Couldn't join #Sniffo on ${SLUG}: ${friendlyApiError(err)}`,
+    );
+    // #244 still holds: a failed join never foregrounds a phantom window.
+    expect(setSelectedChannelMock).not.toHaveBeenCalled();
+  });
+
+  it("raises it on the invite door too, which opens no confirm", async () => {
+    postJoinMock.mockRejectedValueOnce(new ApiError(503, "upstream_unavailable"));
+    const { acceptInvite } = await import("../lib/channelJoin");
+    acceptInvite(SLUG, "#chan");
+    await settle();
+
+    expect(confirmRequest()).toBeNull();
+    expect(joinToasts()).toHaveLength(1);
+    expect(setSelectedChannelMock).not.toHaveBeenCalled();
+  });
+
+  it("carries a transport failure's own message, not an ApiError's copy", async () => {
+    postJoinMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    const { acceptInvite } = await import("../lib/channelJoin");
+    acceptInvite(SLUG, "#chan");
+    await settle();
+
+    const [toast] = joinToasts();
+    expect(toast && joinToastText(toast)).toBe(`Couldn't join #chan on ${SLUG}: Failed to fetch`);
+  });
+
+  it("raises nothing on a join that succeeds", async () => {
+    const { acceptInvite } = await import("../lib/channelJoin");
+    acceptInvite(SLUG, "#chan");
+    await settle();
+
+    expect(joinToasts()).toHaveLength(0);
   });
 });
 

@@ -6,6 +6,7 @@ import {
   bundleRefreshToasts,
   dismissBundleRefreshToast,
 } from "./lib/bundleRefreshNotice";
+import { dismissJoinToast, joinToasts, joinToastText } from "./lib/channelJoin";
 import { dismissInviteToast, inviteToasts, inviteToastText } from "./lib/inviteLink";
 import { copyToasts, dismissCopyToast } from "./lib/messageMenu";
 import { dismissPresenceToast, presenceToasts } from "./lib/notifyWatch";
@@ -109,6 +110,17 @@ const Toasts: Component = () => {
         {(toast) => (
           <ToastRow tone="error" icon="!" onDismiss={() => dismissInviteToast(toast.id)}>
             <span class="toast-text">{inviteToastText(toast)}</span>
+          </ToastRow>
+        )}
+      </For>
+      {/* issue 2719 — a join from a door with no error line of its own (the
+          #648 confirm, an invite's [Join]) failed. It used to reach the
+          console and nothing else, so a confirmed join on a network with no
+          session did nothing visible at all. */}
+      <For each={joinToasts()}>
+        {(toast) => (
+          <ToastRow tone="error" icon="!" onDismiss={() => dismissJoinToast(toast.id)}>
+            <span class="toast-text">{joinToastText(toast)}</span>
           </ToastRow>
         )}
       </For>
