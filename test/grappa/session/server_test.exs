@@ -17048,6 +17048,18 @@ defmodule Grappa.Session.ServerTest do
 
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #control\r\n"), 1_000)
+
+      # The other side of the 001: the same list, now on a registered session.
+      # `#control`'s own `window_pending` is in the mailbox by now, so the
+      # refute names the list's channels.
+      assert {:error, :invalid_line} =
+               Session.send_join({:user, user.id}, network.id, long_list, nil)
+
+      refute_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: :window_pending, channel: "#xxxxx" <> _}
+                     },
+                     100
+
       wire_barrier(server, pid, "after-001")
 
       assert Enum.filter(IRCServer.sent_lines(server), &String.starts_with?(&1, "JOIN ")) == [
