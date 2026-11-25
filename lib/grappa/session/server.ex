@@ -2029,9 +2029,9 @@ defmodule Grappa.Session.Server do
   defguardp deferring(state) when is_reference(:erlang.map_get(:autojoin_defer_timer, state))
 
   # Issue 2744 — where the upstream link stands, for the verbs whose answer
-  # depends on more than "registered or not" (the `:held` JOIN). Derived
-  # from the guards above, never stored, so the gate head and this function
-  # cannot disagree.
+  # depends on more than "registered or not" (the `:held` JOIN and the
+  # `:local_first` PART). Derived from the guards above, never stored, so
+  # the gate head and this function cannot disagree.
   #
   #   * `:no_client` — no Client yet (the Backoff-deferred spawn).
   #   * `:unregistered` — a socket, no 001 yet.
@@ -2097,6 +2097,8 @@ defmodule Grappa.Session.Server do
     # Held until `:ready`, the +r defer included (issue 2744): a JOIN that
     # beats the identify reaches a +R channel unidentified.
     send_join: :held,
+    # The local half always; the line in `:ready`, or in `:deferring` for a
+    # channel the ircd already has us in (issue 2744).
     send_part: :local_first,
     set_explicit_away: :desired_state,
     unset_explicit_away: :desired_state,
@@ -3517,8 +3519,12 @@ defmodule Grappa.Session.Server do
     # Issue 2721 — before 001 we are in no upstream channel, so there is
     # nothing for a PART to leave: the local cleanup above IS the whole PART,
     # and the line would only earn a 451 from an ircd that has not registered
-    # us yet. The same `registered/1` question that holds a JOIN (issue 2728).
-    if registered(state) do
+    # us yet. Issue 2744 — the same holds inside the +r defer for every
+    # channel whose JOIN is still held, which is all of ours, and there the
+    # line earns a 442. See `part_on_wire?/3`.
+    phase = link_phase(state)
+
+    if part_on_wire?(phase, prev, key) do
       case Client.send_part(state.client, channel, reason) do
         :ok ->
           {:noreply, state}
@@ -3543,10 +3549,29 @@ defmodule Grappa.Session.Server do
           {:noreply, state}
       end
     else
-      Logger.info("PART not sent upstream: registration still pending", channel: inspect(channel))
+      Logger.info("PART not sent upstream: not in the channel, #{why_plan_unfired(phase)}",
+        channel: inspect(channel)
+      )
+
       {:noreply, state}
     end
   end
+
+  # Issue 2744 — does the PART of `chan_key` owe the ircd a line? Only when
+  # the ircd can have us in that channel.
+  #
+  #   * `:ready` — always. A JOIN may still be in flight, and the ircd takes
+  #     the two in order, so the PART that follows it leaves the channel.
+  #   * `:deferring` — only for a channel whose own JOIN echo already
+  #     reached us. Every JOIN of ours is held until the plan fires, so that
+  #     is a forced join (SAJOIN, a services auto-join), and it has to stay
+  #     leavable. `prev` is the state before this PART's local cleanup, which
+  #     has already dropped the channel from `members`.
+  #   * before 001 — never: we are in no channel.
+  @spec part_on_wire?(link_phase(), t(), String.t()) :: boolean()
+  defp part_on_wire?(:ready, _, _), do: true
+  defp part_on_wire?(:deferring, prev, chan_key), do: Map.has_key?(prev.members, chan_key)
+  defp part_on_wire?(_, _, _), do: false
 
   # Deferred Client.start_link/1 from `handle_continue({:start_client, _}, _)`'s
   # backoff branch. Pairs with the Backoff lookup at start: when the

@@ -1986,6 +1986,22 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    test "a PART inside the defer of a channel the ircd put us in is written (issue 2744)" do
+      # The one channel we can be IN during the defer is one this session did
+      # not JOIN: a forced join (SAJOIN, a services auto-join) reaches us as
+      # our own JOIN echo. That channel must stay leavable, so its PART goes
+      # out even though the join plan has not fired.
+      {server, user, network, pid} = inside_defer(["#control"])
+
+      IRCServer.feed(server, ":grappa-test!grappa@test.host JOIN :#forced\r\n")
+      :ok = IRCServer.await_handled(server, 1_000)
+
+      assert :ok = Session.send_part({:user, user.id}, network.id, "#forced", nil)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PART #forced\r\n"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "a PART during the +r defer cancels a JOIN held from before 001 (issue 2703)" do
       # The held JOINs ride the deferred plan, so the window in which a PART
       # can overtake one does not close at 001: it runs until the +r echo.
@@ -2008,8 +2024,8 @@ defmodule Grappa.Session.ServerTest do
       # The PART must land INSIDE the defer, not before 001: the cast is one
       # hop to the Server and the 001 is four, so without a barrier the PART
       # wins and this is the pre-001 test again. The 001 handler writes the
-      # IDENTIFY synchronously and stamps `registered_at` last, so once the
-      # line is on the fake, `get_state` returns after the whole handler.
+      # IDENTIFY synchronously, so once the line is on the fake, `get_state`
+      # returns after the whole handler.
       {:ok, _} =
         IRCServer.wait_for_line(
           server,
@@ -2023,8 +2039,10 @@ defmodule Grappa.Session.ServerTest do
       refute Enum.any?(IRCServer.sent_lines(server), &String.starts_with?(&1, "JOIN")),
              "the defer was not armed: the plan fired at 001"
 
+      # `get_state` after the cast: the PART must be handled before the +r is
+      # fed, and the two reach the Server from different senders.
       assert :ok = Session.send_part({:user, user.id}, network.id, "#gone", nil)
-      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PART #gone\r\n"), 1_000)
+      _ = :sys.get_state(pid)
 
       IRCServer.feed(server, ":irc.test.org MODE grappa-test :+r\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #control\r\n"), 1_000)
@@ -2034,6 +2052,15 @@ defmodule Grappa.Session.ServerTest do
 
       refute "JOIN #gone\r\n" in IRCServer.sent_lines(server),
              "the deferred plan sent a JOIN that a PART had cancelled"
+
+      # Issue 2744 — this test used to WAIT for `PART #gone` on the wire. It
+      # was asserting the bug: nothing ever JOINed #gone (its JOIN was held,
+      # then cancelled), so the ircd has us in no such channel and answers
+      # that line with 442 ERR_NOTONCHANNEL. The cancel this test is about is
+      # the PART's local half, and it still runs; the wire half belongs to a
+      # channel we are in.
+      refute "PART #gone\r\n" in IRCServer.sent_lines(server),
+             "a PART was written for a channel this session never joined"
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -2071,7 +2098,7 @@ defmodule Grappa.Session.ServerTest do
              "the defer was not armed: the plan fired at 001"
 
       assert :ok = Session.send_part({:user, user.id}, network.id, "#gone", nil)
-      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PART #gone\r\n"), 1_000)
+      _ = :sys.get_state(pid)
 
       IRCServer.feed(server, ":irc.test.org MODE grappa-test :+r\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #control\r\n"), 1_000)
@@ -2081,6 +2108,11 @@ defmodule Grappa.Session.ServerTest do
 
       refute "JOIN #gone\r\n" in IRCServer.sent_lines(server),
              "the deferred plan JOINed a boot channel the subject PARTed inside the defer"
+
+      # Issue 2744 — inverted for the reason the test above gives: the plan
+      # had not JOINed #gone yet, so a PART line would only earn a 442.
+      refute "PART #gone\r\n" in IRCServer.sent_lines(server),
+             "a PART was written for a boot channel the plan had not joined yet"
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

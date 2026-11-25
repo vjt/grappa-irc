@@ -28,7 +28,9 @@ defmodule Grappa.Session.VerbPolicy do
       (JOIN: queued before 001 and through the #347 +r defer, fired with the
       join plan — issue 2744).
     * `:local_first` — a local half that always runs, and a wire half only
-      on a registered link (PART).
+      for a channel the ircd can have us in (PART: once the join plan has
+      fired, or inside the +r defer for a channel already joined — issue
+      2744).
     * `:desired_state` — records what the operator wants now; the 001
       reconcile carries it upstream (away, the notify list).
     * `:local` — writes nothing upstream.
