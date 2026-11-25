@@ -10,9 +10,11 @@
 //      not re-fire it.
 //   2. An invite to a channel we are already in switches straight there with
 //      NO modal (#648's rule: asking to join an open window is noise).
-//   3. An invite naming a network this account has not bound joins nothing
-//      and says so — the branch #793 leaves open (cross-user network
-//      identity) must be a visible dead end, never a silent one.
+//   3. An invite naming a network this server does not offer the recipient
+//      joins nothing, attaches nothing, and says so. Issue 2703 turned #793's
+//      open branch into "attach it, then join" for a network the recipient MAY
+//      bind (issue2703-invite-connect.spec.ts); what is left is the dead end,
+//      and it must be a visible one, never a silent one.
 //
 // `?go=` is a query param on `/`, deliberately: vjt asked for it in those
 // words so an invite could never collide with a client route. The first
@@ -21,14 +23,14 @@
 // depends on the path any more, which is the property that made the denylist
 // unnecessary.
 
-import type { Page } from "@playwright/test";
 import {
   confirmModal,
   confirmModalBody,
   confirmModalYes,
+  openInviteLink,
   sidebarWindow,
 } from "../fixtures/cicchettoPage";
-import { joinChannel, listChannelNames, partChannel, type SeededUser } from "../fixtures/grappaApi";
+import { joinChannel, listChannelNames, partChannel } from "../fixtures/grappaApi";
 import { NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specUser, test } from "../fixtures/test";
 
@@ -38,33 +40,11 @@ import { expect, specUser, test } from "../fixtures/test";
 // test (`#BoFH`), which is the cheaper place for a casing matrix.
 const freshChannel = (label: string) => `#i793${label}-${crypto.randomUUID().slice(0, 6)}`;
 
-// Links are written by hand — there is no generator in the product, by vjt's
-// ruling — so this helper IS the canonical spelling, and it is the shape the
-// docs quote. The channel travels WITHOUT its `#` (a literal `#` starts the
-// fragment and the value would truncate; the parser implies the sigil), and
-// each component is encoded on its own so the `/` separator survives.
-const inviteUrl = (networkSlug: string, channel: string) =>
-  `/?go=${encodeURIComponent(networkSlug)}/${encodeURIComponent(channel.replace(/^#/, ""))}`;
-
-// Auth is pre-seeded the way `loginAs` does it, but the navigation target is
-// the invite URL rather than `/` — `loginAs` always gotos the bare root.
-async function openInvite(page: Page, vjt: SeededUser, path: string): Promise<void> {
-  await page.addInitScript(
-    ([token, subjectJson]) => {
-      localStorage.setItem("grappa-token", token);
-      localStorage.setItem("grappa-subject", subjectJson);
-      localStorage.setItem("cic.installChoice", "browser");
-    },
-    [vjt.token, vjt.subjectJson] as const,
-  );
-  await page.goto(path);
-}
-
 test("an invite link asks, then joins and switches (#793)", async ({ page }) => {
   const vjt = specUser();
   const target = freshChannel("join");
 
-  await openInvite(page, vjt, inviteUrl(NETWORK_SLUG, target));
+  await openInviteLink(page, vjt, NETWORK_SLUG, target);
 
   // Discriminating probe: the invite reader sets this only after it has
   // ROUTED a parsed target, so the assertions below cannot pass off the back
@@ -114,7 +94,7 @@ test("an invite to a channel we are already in switches with NO modal (#793)", a
     .toContain(already);
 
   try {
-    await openInvite(page, vjt, inviteUrl(NETWORK_SLUG, already));
+    await openInviteLink(page, vjt, NETWORK_SLUG, already);
     await page.waitForFunction(() => window.__cicInviteLinkApplied === true, null, {
       timeout: 15_000,
     });
@@ -128,17 +108,32 @@ test("an invite to a channel we are already in switches with NO modal (#793)", a
   }
 });
 
-test("an invite for an unbound network joins nothing and says so (#793)", async ({ page }) => {
+test("an invite for a network this server does not offer joins nothing and says so (#793, issue 2703)", async ({
+  page,
+}) => {
   const vjt = specUser();
+  // Counted from before the first navigation, so an attach the route should
+  // not have made cannot slip in ahead of the listener.
+  const attaches: string[] = [];
+  page.on("request", (req) => {
+    if (req.method() === "POST" && new URL(req.url()).pathname === "/session/networks") {
+      attaches.push(req.url());
+    }
+  });
 
-  await openInvite(page, vjt, inviteUrl("nowhere-bound", "somechannel"));
+  await openInviteLink(page, vjt, "nowhere-bound", "somechannel");
   await page.waitForFunction(() => window.__cicInviteLinkApplied === true, null, {
     timeout: 15_000,
   });
 
-  await expect(page.locator(".toast-stack .toast")).toContainText("nowhere-bound", {
-    timeout: 10_000,
-  });
-  // No consent was asked for, because there is nothing to consent to.
+  // One sentence for "no such network here" and "not for you" (issue 2703):
+  // the copy must not tell a stranger which networks a deployment carries.
+  await expect(page.locator(".toast-stack .toast")).toContainText(
+    "Invite for nowhere-bound — that network is not available here.",
+    { timeout: 10_000 },
+  );
+  // No consent was asked for, because there is nothing to consent to, and
+  // nothing was attached, because there is nothing to attach.
   await expect(confirmModal(page)).toHaveCount(0);
+  expect(attaches).toEqual([]);
 });
