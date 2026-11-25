@@ -5655,11 +5655,12 @@ static void render_row(struct app *app, const struct wire_scrollback_message *m,
      * yesterday.
      *
      * AFTER the switch, not inside it. This call spent its whole life in
-     * the `default:` arm — the arm reached by exactly the kinds that are
-     * NOT conversational — so `conversational` was false every time it was
-     * evaluated and the bot never saw a single message. Everything built
-     * on top of it (the approval gate, the grants, the memories) was
-     * therefore live code behind a dead door. */
+     * the arm that is now the presence one, a `default:` then — the arm
+     * reached by exactly the kinds that are NOT conversational — so
+     * `conversational` was false every time it was evaluated and the bot
+     * never saw a single message. Everything built on top of it (the
+     * approval gate, the grants, the memories) was therefore live code
+     * behind a dead door. */
     if (conversational && live && !hidden && !encrypted)
         bot_consider(app, network, display_channel, sender, body);
     /* Same three guards, and each one earns its place: `live` so a
