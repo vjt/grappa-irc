@@ -23,6 +23,8 @@ const CASES: Array<{ code: string; matches: RegExp }> = [
   { code: "invalid_mask", matches: /ban mask isn't valid/i },
   { code: "invalid_line", matches: /characters that aren't allowed/i },
   { code: "upstream_unavailable", matches: /connection may be down/i },
+  // issue 2728 — an IRC verb refused before 001.
+  { code: "not_registered", matches: /still connecting to this network/i },
   { code: "body_too_large", matches: /too long to send/i },
   // #364 bucket H (cross-surface S5) — the awaited watchlist verbs
   // (/hilight add|del via pushWatchlistAdd/Del, compose.ts:893-897) reply

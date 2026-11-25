@@ -18,9 +18,10 @@ defmodule GrappaWeb.DirectoryController do
     * `POST /networks/:network_id/directory/refresh` — arms a fresh
       upstream `LIST` via `Grappa.Session.refresh_directory/2`. Both a
       started refresh (`:ok`) and an in-flight one
-      (`{:error, :already_refreshing}`) answer `202 {}`; only a missing
-      live session (`{:error, :not_connected}`) surfaces an error,
-      mapped by `FallbackController` to 400.
+      (`{:error, :already_refreshing}`) answer `202 {}`; a missing live
+      session (`{:error, :not_connected}`, 400) and one the network has
+      not registered yet (`{:error, :not_registered}`, 503) surface an
+      error through `FallbackController`.
   """
   use GrappaWeb, :controller
 
@@ -84,10 +85,11 @@ defmodule GrappaWeb.DirectoryController do
   @doc """
   `POST /networks/:network_id/directory/refresh` — arms a fresh
   upstream `LIST`. `:ok` (started) and `{:error, :already_refreshing}`
-  (in-flight) both answer `202 {}`; `{:error, :not_connected}` falls
-  through to `FallbackController` (400).
+  (in-flight) both answer `202 {}`; `{:error, :not_connected}` (no
+  session, 400) and `{:error, :not_registered}` (the network has not
+  registered us yet, 503 — issue 2728) fall through to `FallbackController`.
   """
-  @spec refresh(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :not_connected}
+  @spec refresh(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :not_connected | :not_registered}
   def refresh(conn, _) do
     network = conn.assigns.network
     subject = Subject.to_session(conn.assigns.current_subject)
@@ -96,15 +98,16 @@ defmodule GrappaWeb.DirectoryController do
       result when result in [:ok, {:error, :already_refreshing}] ->
         conn |> put_status(:accepted) |> json(%{})
 
-      {:error, :not_connected} = err ->
+      {:error, reason} = err when reason in [:not_connected, :not_registered] ->
         err
     end
   end
 
   # First-poll bootstrap: no snapshot + live session → arm the refresh
   # so the next GET fills. Result is intentionally discarded — no
-  # session ({:error, :not_connected}) or already running
-  # ({:error, :already_refreshing}) are both expected no-ops here.
+  # session ({:error, :not_connected}), a session not registered yet
+  # ({:error, :not_registered}) or already running
+  # ({:error, :already_refreshing}) are all expected no-ops here.
   @spec maybe_auto_refresh(Session.subject(), integer()) :: :ok
   defp maybe_auto_refresh(subject, network_id) do
     _ = Session.refresh_directory(subject, network_id)

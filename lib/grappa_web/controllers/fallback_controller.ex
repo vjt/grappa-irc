@@ -69,6 +69,7 @@ defmodule GrappaWeb.FallbackController do
            | :network_ambiguous
            | :network_unconfigured
            | :upstream_unreachable
+           | :not_registered
            | :no_socket
            | :closed
            | :resolve_failed
@@ -838,6 +839,17 @@ defmodule GrappaWeb.FallbackController do
   def call(conn, {:error, :upstream_unreachable}), do: upstream_unreachable(conn)
   def call(conn, {:error, :no_socket}), do: upstream_unreachable(conn)
   def call(conn, {:error, :closed}), do: upstream_unreachable(conn)
+
+  # issue 2728 — the session refused an IRC verb BEFORE writing anything:
+  # the link is up (or coming up) but the network has not registered us
+  # yet, and an ircd drops every non-registration line until it has. Not
+  # `upstream_unreachable`: nothing failed to reach anything, and the same
+  # request succeeds once registration completes — a 503, retryable.
+  def call(conn, {:error, :not_registered}) do
+    conn
+    |> put_status(:service_unavailable)
+    |> json(%{error: "not_registered"})
+  end
 
   # U-2 (UD7): three-way split replaces pre-U-2 single `:timeout`.
   # Each carries distinct operator semantics + distinct Retry-After

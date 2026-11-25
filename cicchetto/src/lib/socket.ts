@@ -482,7 +482,13 @@ let _socket: Socket | null = null;
 // This slice only follows the rename (`friendlyApiError`,
 // `friendlyChannelError`); narrowing responses against the new schemas is
 // the next one. `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 67;
+//
+// 68 (issue 2728) — a new error token on both transports, `not_registered`
+// (REST 503): the session refused an IRC verb before 001. `friendlyApiError`
+// and `friendlyChannelError` name it ("still connecting"); an older server
+// answers the same moment with `upstream_unreachable` or a false success.
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 68;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //
