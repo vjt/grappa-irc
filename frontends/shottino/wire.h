@@ -79,7 +79,7 @@
  * generated from `Grappa.Scrollback.Message`'s `@type kind`). Three things
  * bind them, one link each: wire.c's name table puts every name at its
  * enumerator (`[MSG_JOIN] = "join"`); CLOSED_SET asserts that the table
- * ends at MSG_SERVER_EVENT; and test_commands pins the table to
+ * ends at the enum's last enumerator; and test_commands pins the table to
  * SCROLLBACK_MESSAGE_KIND. A MSG_* appended with no name passes all
  * three, since the table is then only shorter than the enum and the value
  * reads "unknown": -Wswitch in the kind switches is what names it. */
