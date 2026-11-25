@@ -316,6 +316,21 @@ describe("routeInviteTarget, available network", () => {
     expect(inviteToasts()).toHaveLength(0);
   });
 
+  it("tells a recipient whose bearer is gone that it is not signed in, and attaches nothing", async () => {
+    // The post-logout race: the invite routes after the token went away.
+    live.setToken(null);
+    routeInviteTarget(disagio);
+
+    await vi.waitFor(() => expect(inviteToasts()).toHaveLength(1));
+    expect(inviteToasts()[0]).toMatchObject({
+      networkSlug: "azzurra2",
+      reason: "attach_failed",
+      message: "not signed in",
+    });
+    expect(attachNetwork).not.toHaveBeenCalled();
+    expect(confirmJoinChannel).not.toHaveBeenCalled();
+  });
+
   it("raises the server's refusal as the invite toast and joins nothing", async () => {
     const refusal = new ApiError(403, "network_not_visitor_enabled");
     vi.mocked(attachNetwork).mockRejectedValue(refusal);
