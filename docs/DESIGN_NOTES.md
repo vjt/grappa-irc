@@ -9949,7 +9949,10 @@ row. Measured red on main for each, before the fix.
   :local`. `Grappa.Session.VerbPolicy` checks the table against the clauses
   at compile time, both ways (unclassified tag, entry nobody answers, policy
   outside the set), so a new verb is a compile error until it is classified —
-  the `Record<WindowState, …>` posture of #2693 on the server side. Done with
+  the `Record<WindowState, …>` posture of #2693 on the server side. A head
+  whose first argument is a bare variable carries no tag and would slip past
+  both directions (`when elem(r, 0) == :send_foo`), so those are counted as
+  well: exactly one `handle_call/3` (the gate) and no `handle_cast/2`. Done with
   `@before_compile` + `Module.get_definition/2`, not the AST-test fallback:
   the definitions are already expanded there, the check costs no test run,
   and it fails at the line that matters.
