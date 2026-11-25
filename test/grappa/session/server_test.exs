@@ -8718,7 +8718,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     # #1394 — the outbound door. Every path that puts an ASSEMBLED line on the
-    # wire must cross `capture_outbound_ns_secret/2`; a secret that travels a
+    # wire must cross `capture_outbound_ns_secret/3`; a secret that travels a
     # path which does not never stages the `+r` rendezvous, and the symptom
     # arrives later and elsewhere as "my saved password stopped updating".
     #
@@ -8772,8 +8772,8 @@ defmodule Grappa.Session.ServerTest do
     # same "s3cret" and leave this test green even with the sniff removed
     # from the door. Withholding the welcome leaves the flush as the only
     # possible source. The GHOST appearing on the wire is the barrier: the
-    # door sniffs BEFORE it sends, and `:sys.get_state` serialises after the
-    # callback that did both.
+    # door sniffs right after it sends, in the same callback, and
+    # `:sys.get_state` serialises after the callback that did both.
     test "#1394 the ghost-recovery flush crosses the outbound NickServ sniff" do
       nick = "v1394_#{System.unique_integer([:positive])}"
       counter = :counters.new(1, [])
@@ -9886,6 +9886,249 @@ defmodule Grappa.Session.ServerTest do
 
       assert visitor_password(visitor, network) == "newpassword"
       assert Credentials.visitor_registered?(visitor.id)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
+  # A NickServ secret rides a line, and what the session does with it —
+  # rotate the stored password (SET PASSWD #131, RESETPASS #978) or stage a
+  # `+r` rendezvous (IDENTIFY, REGISTER #129) — is only true of a line that
+  # was WRITTEN. A write that fails or times out changed nothing upstream, so
+  # the stored credential must not change either. One test per door: the
+  # `handle_call` verbs, `/quote`, the 001 perform pass and the sub-machine
+  # door (`send_outbound/3`).
+  #
+  # The failure is bought by taking the Client's socket away (`socket: nil`
+  # answers `{:error, :no_socket}`) on a session that HAS registered, so the
+  # registration gate (issue 2728) lets the verb through and only the write
+  # is left to fail. A Client whose socket is nil reads no more frames, so
+  # every inbound the test still needs is fed before it, or delivered to the
+  # session as the Client would deliver it.
+  describe "a NickServ secret counts only from a line that was written" do
+    defp refuse_writes!(pid) do
+      client = pid |> SessionStateHelpers.fetch() |> SessionStateHelpers.client()
+      :sys.replace_state(client, fn cs -> %{cs | socket: nil} end)
+      :ok
+    end
+
+    defp identified_user_session(port) do
+      {user, network, _} =
+        setup_user_and_network(port, %{auth_method: :nickserv_identify, password: "oldpass"})
+
+      {user, network, start_session_for(user, network)}
+    end
+
+    test "a SET PASSWD whose write fails leaves the stored password as it was" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, pid} = identified_user_session(port)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.welcome(server, 1_000)
+      :ok = identified!(server, pid)
+      :ok = refuse_writes!(pid)
+
+      capture_log(fn ->
+        assert {:error, :no_socket} =
+                 Session.send_privmsg({:user, user.id}, network.id, "NickServ", "SET PASSWD oldpass newpass")
+      end)
+
+      assert Credentials.get_credential!(user, network).password_encrypted == "oldpass"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "a RESETPASS whose write fails leaves the stored password as it was" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, pid} = identified_user_session(port)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.welcome(server, 1_000)
+      :ok = identified!(server, pid)
+      :ok = refuse_writes!(pid)
+
+      capture_log(fn ->
+        assert {:error, :no_socket} =
+                 Session.send_privmsg(
+                   {:user, user.id},
+                   network.id,
+                   "NickServ",
+                   "RESETPASS grappa-test 12345 newpassword"
+                 )
+      end)
+
+      assert Credentials.get_credential!(user, network).password_encrypted == "oldpass"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "an IDENTIFY whose write fails stages no +r rendezvous" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.welcome(server, 1_000)
+      :ok = refuse_writes!(pid)
+
+      # The credential is not `:nickserv_identify`, so 001 staged nothing of
+      # its own: whatever is staged afterwards came from the line below.
+      assert is_nil(SessionStateHelpers.pending_auth(SessionStateHelpers.fetch(pid)))
+
+      capture_log(fn ->
+        assert {:error, :no_socket} =
+                 Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY s3cret")
+      end)
+
+      state = SessionStateHelpers.fetch(pid)
+      assert is_nil(SessionStateHelpers.pending_auth(state))
+      assert is_nil(SessionStateHelpers.pending_auth_timer(state))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "a REGISTER whose write fails stages no registration secret" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.welcome(server, 1_000)
+      :ok = refuse_writes!(pid)
+
+      capture_log(fn ->
+        assert {:error, :no_socket} =
+                 Session.send_privmsg({:visitor, visitor.id}, network.id, "NickServ", "REGISTER regpass me@x.io")
+      end)
+
+      assert is_nil(SessionStateHelpers.pending_registration_secret(SessionStateHelpers.fetch(pid)))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "a /quote SET PASSWD whose write fails leaves the stored password as it was" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, pid} = identified_user_session(port)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.welcome(server, 1_000)
+      :ok = identified!(server, pid)
+      :ok = refuse_writes!(pid)
+
+      capture_log(fn ->
+        assert {:error, :no_socket} =
+                 Session.send_raw({:user, user.id}, network.id, "PRIVMSG NickServ :SET PASSWD oldpass newpass")
+      end)
+
+      assert Credentials.get_credential!(user, network).password_encrypted == "oldpass"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # The frame of a timed-out write waits in the Client's mailbox and may
+    # still go out (issue 2370), so the outcome is unknown, not "not sent".
+    # Unknown is not a write either: the password stays, and if the frame did
+    # get through, retyping it in the network's password field (#124) repairs
+    # the credential, as it does for a change services refused. Costs the
+    # fixed 5 s call deadline in wall clock.
+    @tag timeout: 60_000
+    test "a SET PASSWD whose write times out leaves the stored password as it was" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, pid} = identified_user_session(port)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.welcome(server, 1_000)
+      :ok = identified!(server, pid)
+
+      client = pid |> SessionStateHelpers.fetch() |> SessionStateHelpers.client()
+      :ok = :sys.suspend(client)
+
+      capture_log(fn ->
+        assert {:error, :timeout} =
+                 Session.send_privmsg({:user, user.id}, network.id, "NickServ", "SET PASSWD oldpass newpass")
+
+        # The caller's deadline and the session's inner one are the same 5 s
+        # and nested: wait out the inner one, then let the session finish.
+        Process.sleep(500)
+        _ = SessionStateHelpers.fetch(pid)
+      end)
+
+      assert Credentials.get_credential!(user, network).password_encrypted == "oldpass"
+
+      :ok = :sys.resume(client)
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # The built-in IDENTIFY goes out from the 001 handler through the same
+    # perform door as a typed one. Written, it stages the `+r` rendezvous that
+    # identifies a `:nickserv_identify` session; refused, it stages nothing.
+    # The 001 of the refused case is delivered straight to the session,
+    # because the Client has stopped reading frames by then.
+    test "the 001 built-in IDENTIFY stages the +r rendezvous once it is written" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {_, _, pid} = identified_user_session(port)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.welcome(server, 1_000)
+
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PRIVMSG NickServ :IDENTIFY oldpass\r\n"), 1_000)
+      assert match?({"oldpass", _}, SessionStateHelpers.pending_auth(SessionStateHelpers.fetch(pid)))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "the 001 built-in IDENTIFY stages nothing when its write fails" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {_, _, pid} = identified_user_session(port)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = refuse_writes!(pid)
+      before = SessionStateHelpers.fetch(pid)
+      assert SessionStateHelpers.pending_password(before) == "oldpass"
+
+      capture_log(fn ->
+        send(
+          pid,
+          {:irc,
+           %Message{
+             command: {:numeric, 1},
+             params: [SessionStateHelpers.nick(before), "Welcome"],
+             prefix: {:server, "irc.test.org"},
+             tags: %{}
+           }}
+        )
+
+        state = SessionStateHelpers.fetch(pid)
+        # The perform pass ran (it spends the one-shot secret) and its
+        # IDENTIFY was refused.
+        assert is_nil(SessionStateHelpers.pending_password(state))
+        assert is_nil(SessionStateHelpers.pending_auth(state))
+      end)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # The sub-machine door (#1394): GhostRecovery's GHOST is the one line on
+    # it that carries a secret. The 433 is delivered straight to the session
+    # for the same reason as the 001 above.
+    test "a GHOST whose write fails stages no +r rendezvous" do
+      nick = "vghost_#{System.unique_integer([:positive])}"
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {anon_visitor, network} = visitor_with_network(port, nick: nick)
+      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, network.id, "s3cret")
+      pid = start_visitor_session_for(Grappa.Repo.reload!(anon_visitor), network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = refuse_writes!(pid)
+
+      capture_log(fn ->
+        send(
+          pid,
+          {:irc,
+           %Message{
+             command: {:numeric, 433},
+             params: ["*", nick, "Nickname is already in use."],
+             prefix: {:server, "irc.test.org"},
+             tags: %{}
+           }}
+        )
+
+        state = SessionStateHelpers.fetch(pid)
+        # The 433 was handled: the recovery is armed.
+        refute is_nil(SessionStateHelpers.ghost_recovery(state))
+        assert is_nil(SessionStateHelpers.pending_auth(state))
+      end)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

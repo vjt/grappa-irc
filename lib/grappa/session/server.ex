@@ -1584,7 +1584,7 @@ defmodule Grappa.Session.Server do
   # (a) feed the built-in `PRIVMSG NickServ :IDENTIFY <pw>` from
   # `run_perform_and_identify/2` and (b) expand `$nickserv_pass` in the
   # perform list. Both leave through the outbound choke point
-  # (`capture_outbound_ns_secret → Client.send_raw`), so `NSInterceptor`
+  # (`Client.send_raw → capture_outbound_ns_secret`), so `NSInterceptor`
   # self-stages the +r MODE `pending_auth` rendezvous uniformly — GH #189
   # moved the built-in identify out of `AuthFSM` and DELETED the host-side
   # `maybe_stage_pending_password/1` staging helper. It is also read on the
@@ -2149,14 +2149,12 @@ defmodule Grappa.Session.Server do
 
   def handle_call({:send_privmsg, target, body}, _, state)
       when is_binary(target) and is_binary(body) do
-    line = "PRIVMSG #{target} :#{body}"
-    state = capture_outbound_ns_secret(state, line)
+    answered =
+      if service_target?(target),
+        do: handle_service_target_send(target, body, state),
+        else: handle_persisting_send(target, body, state)
 
-    if service_target?(target) do
-      handle_service_target_send(target, body, state)
-    else
-      handle_persisting_send(target, body, state)
-    end
+    reply_capturing(answered, "PRIVMSG #{target} :#{body}")
   end
 
   # #640 — /ctcp + /ping outbound CTCP QUERY. Unlike a plain PRIVMSG, a CTCP
@@ -2176,9 +2174,7 @@ defmodule Grappa.Session.Server do
   # the registration gate above, mirroring the sibling {:send_topic, …}.)
   def handle_call({:send_ctcp, source, ctcp_target, body}, _, state)
       when is_binary(source) and is_binary(ctcp_target) and is_binary(body) do
-    line = "PRIVMSG #{ctcp_target} :#{body}"
-    state = capture_outbound_ns_secret(state, line)
-    handle_ctcp_send(source, ctcp_target, body, state)
+    reply_capturing(handle_ctcp_send(source, ctcp_target, body, state), "PRIVMSG #{ctcp_target} :#{body}")
   end
 
   # issue 2430 — the client's end-to-end encrypted message to a peer. Not a
@@ -2277,7 +2273,7 @@ defmodule Grappa.Session.Server do
   # for the same W12 reason — a mistyped `/notice nickserv identify <pass>`
   # must reach the wire without leaving the secret in scrollback.
   #
-  # The line still passes the `capture_outbound_ns_secret/2` choke point even
+  # The line still passes the `capture_outbound_ns_secret/3` choke point even
   # though `NSInterceptor`'s patterns are anchored on `PRIVMSG NickServ …` and
   # cannot match a NOTICE. That is the correct outcome, not an oversight:
   # services ignore notices, so an identify sent this way authenticates nothing
@@ -2288,14 +2284,12 @@ defmodule Grappa.Session.Server do
   # the registration gate above.)
   def handle_call({:send_notice, source, target, body}, _, state)
       when is_binary(source) and is_binary(target) and is_binary(body) do
-    line = "NOTICE #{target} :#{body}"
-    state = capture_outbound_ns_secret(state, line)
+    answered =
+      if service_target?(target),
+        do: handle_service_target_notice(target, body, state),
+        else: handle_notice_send(source, target, body, state)
 
-    if service_target?(target) do
-      handle_service_target_notice(target, body, state)
-    else
-      handle_notice_send(source, target, body, state)
-    end
+    reply_capturing(answered, "NOTICE #{target} :#{body}")
   end
 
   # issue 2179 — /msg to a channel at a membership level (`@#chan` ops-only,
@@ -2322,21 +2316,21 @@ defmodule Grappa.Session.Server do
   # the registration gate above.)
   def handle_call({:send_statusmsg, target, body}, _, state)
       when is_binary(target) and is_binary(body) do
-    line = "PRIVMSG #{target} :#{body}"
+    answered =
+      case Identifier.peel_statusmsg(target, session_statusmsg(state)) do
+        {channel, level} when is_binary(level) ->
+          handle_statusmsg_send(target, channel, level, body, state)
+
+        {_, nil} ->
+          {:reply, {:error, :invalid_line}, state}
+      end
+
     # Routed through the choke point for the same reason the NOTICE door is:
     # `NSInterceptor` cannot match a channel target today, and keeping the door
     # in the path is what makes it participate automatically if it ever learns
     # a new shape. No `service_target?/1` branch, though — a channel is never a
     # `*Serv`, so the W12 carve-out has nothing to carve here.
-    state = capture_outbound_ns_secret(state, line)
-
-    case Identifier.peel_statusmsg(target, session_statusmsg(state)) do
-      {channel, level} when is_binary(level) ->
-        handle_statusmsg_send(target, channel, level, body, state)
-
-      {_, nil} ->
-        {:reply, {:error, :invalid_line}, state}
-    end
+    reply_capturing(answered, "PRIVMSG #{target} :#{body}")
   end
 
   # Sends `TOPIC <channel> :<body>` upstream. NO optimistic persist +
@@ -2424,22 +2418,16 @@ defmodule Grappa.Session.Server do
   # #540 B1 — a raw `/quote WHO ...` primes the WHO accumulator here, exactly
   # like `:send_who`, so its 352/315 reply surfaces the WhoModal instead of
   # being dropped as unsolicited (the "no error, no output" hole). This
-  # mirrors the sibling `capture_outbound_ns_secret/2` outbound-line sniff:
+  # mirrors the sibling `capture_outbound_ns_secret/3` outbound-line sniff:
   # both give a subsequent inbound reply the state it needs to be handled.
   def handle_call({:send_raw, line}, _, state) when is_binary(line) do
     Logger.debug("raw IRC line submitted via /quote (#{byte_size(line)} bytes)",
       verb: :raw
     )
 
-    state =
-      state
-      |> capture_outbound_ns_secret(line)
-      |> maybe_prime_raw_who(line)
-
-    case Client.send_raw(state.client, line) do
-      :ok -> {:reply, :ok, state}
-      {:error, _} = err -> {:reply, err, state}
-    end
+    state = maybe_prime_raw_who(state, line)
+    result = Client.send_raw(state.client, line)
+    {:reply, result, capture_outbound_ns_secret(state, line, result)}
   end
 
   # ---------------------------------------------------------------------------
@@ -5434,8 +5422,8 @@ defmodule Grappa.Session.Server do
   # GH #189 — run the on-connect perform list at 001, then (unless the list
   # already identified) grappa's built-in NickServ IDENTIFY, BEFORE autojoin.
   # Every line goes through the SAME outbound choke point as `/quote`
-  # (`capture_outbound_ns_secret/2` → `Client.send_raw/2`), so `NSInterceptor`
-  # stages the `+r` rendezvous for any identify. This REPLACES the old
+  # (`Client.send_raw/2`, then `capture_outbound_ns_secret/3` on the written
+  # line), so `NSInterceptor` stages the `+r` rendezvous for any identify. This REPLACES the old
   # `maybe_stage_pending_password/1`: the built-in identify used to be emitted
   # by AuthFSM inside `Grappa.IRC.Client`, bypassing the choke point, so the
   # host had to stage `pending_auth` by hand. Now the identify leaves through
@@ -5519,16 +5507,16 @@ defmodule Grappa.Session.Server do
   @spec configured_nick(t()) :: String.t()
   defp configured_nick(state), do: Map.get(state, :configured_nick, state.nick)
 
-  # Sends one expanded perform line through the outbound choke point: capture
-  # any NickServ secret (stages the `+r` rendezvous), then `Client.send_raw`
-  # (which frames + CR/LF/NUL-guards the line). Non-fatal on a dead socket or
-  # a line the guard rejects — a failed on-connect line must never crash the
-  # freshly-registered session.
+  # Sends one expanded perform line through the outbound choke point:
+  # `Client.send_raw` (which frames + CR/LF/NUL-guards the line), then, once
+  # it was written, capture any NickServ secret (stages the `+r` rendezvous).
+  # Non-fatal on a dead socket or a line the guard rejects — a failed
+  # on-connect line must never crash the freshly-registered session.
   @spec send_perform_line(t(), String.t()) :: t()
   defp send_perform_line(state, line) do
-    state = capture_outbound_ns_secret(state, line)
-    _ = maybe_log_send_failure("perform_line", Client.send_raw(state.client, line))
-    state
+    result = Client.send_raw(state.client, line)
+    _ = maybe_log_send_failure("perform_line", result)
+    capture_outbound_ns_secret(state, line, result)
   end
 
   # #189 / #509 / #124 — grappa's built-in NickServ IDENTIFY, sent AFTER the
@@ -5695,8 +5683,21 @@ defmodule Grappa.Session.Server do
   # `pending_registration_secret`; SET PASSWD → commit OPTIMISTICALLY
   # on-send (#131 — no `+r` fires for a password change, so there's no
   # rendezvous to stage against).
-  @spec capture_outbound_ns_secret(t(), String.t()) :: t()
-  defp capture_outbound_ns_secret(state, line) do
+  #
+  # The third argument is the WRITE's result, and every door runs this
+  # AFTER its write: the secret counts only from a line that went out. A
+  # line that did not changed nothing upstream, so committing or staging
+  # it would store a password services never saw. `:timeout` is not a
+  # write either, although its frame may still go out (issue 2370): the
+  # stored password then stays the old one, and retyping it into the
+  # network's password field (#124) repairs it, as it does for a change
+  # services refused. `{:ok, _}` is the reply of a door that persists, which
+  # answers ok only once every frame of the line was written.
+  @spec capture_outbound_ns_secret(t(), String.t(), :ok | {:ok, term()} | {:error, term()}) :: t()
+  defp capture_outbound_ns_secret(state, _, {:error, _}), do: state
+  defp capture_outbound_ns_secret(state, line, {:ok, _}), do: capture_outbound_ns_secret(state, line, :ok)
+
+  defp capture_outbound_ns_secret(state, line, :ok) do
     case NSInterceptor.intercept(line, state.nick) do
       {:capture, :register, password} ->
         maybe_stage_pending_registration(state, password)
@@ -5743,8 +5744,18 @@ defmodule Grappa.Session.Server do
     end
   end
 
-  # #1394 — the outbound door for an ALREADY-ASSEMBLED wire line: sniff, then
-  # send. The sniff above is a choke point only where something calls it, and
+  # The capture for a `handle_call` door that writes through a typed verb
+  # helper: its reply IS the write's result — `:ok` / `{:ok, _}` only once
+  # every frame went out, `{:error, _}` otherwise, including a persist that
+  # failed before any write — so the reply is what decides, and `line` is
+  # the line the door wrote, rebuilt for the sniff.
+  @spec reply_capturing({:reply, reply, t()}, String.t()) :: {:reply, reply, t()}
+        when reply: :ok | {:ok, term()} | {:error, term()}
+  defp reply_capturing({:reply, reply, state}, line),
+    do: {:reply, reply, capture_outbound_ns_secret(state, line, reply)}
+
+  # #1394 — the outbound door for an ALREADY-ASSEMBLED wire line: send, then
+  # sniff what was written. The sniff above is a choke point only where something calls it, and
   # until now what called it was the author of each new send site remembering
   # to — two comments were the whole enforcement mechanism. A path that
   # forgets does not fail; it stages nothing, the `+r` rendezvous never fires,
@@ -5758,7 +5769,7 @@ defmodule Grappa.Session.Server do
   # and every user-authored line already crosses the capture one frame up at
   # its `handle_call`. Widening the door to them would sniff the same line
   # TWICE — harmless for `:identify` (idempotent staging) but not for
-  # `:set_passwd`/`:reset_passwd`, which commit on-send.
+  # `:set_passwd`/`:reset_passwd`, which commit on a written line.
   #
   # `origin` is not decoration. The door has ONE caller, the `{:reply, _, _}`
   # arm of `apply_effects/2`, which both paths reach (`emit_reply_lines/3`
@@ -5780,9 +5791,9 @@ defmodule Grappa.Session.Server do
   # may BE the secret.
   @spec send_outbound(t(), String.t(), EventRouter.origin()) :: t()
   defp send_outbound(state, line, origin) do
-    state = capture_outbound_ns_secret(state, line)
+    result = Client.send_line(state.client, line)
 
-    case Client.send_line(state.client, line) do
+    case result do
       :ok ->
         :ok
 
@@ -5793,7 +5804,7 @@ defmodule Grappa.Session.Server do
         )
     end
 
-    state
+    capture_outbound_ns_secret(state, line, result)
   end
 
   # #540 B1 — if the raw `/quote` line is a WHO command, prime the WHO
@@ -6423,7 +6434,7 @@ defmodule Grappa.Session.Server do
 
   # Sub-machine lines (ghost AND recover) bypass `handle_call({:send_privmsg,
   # ...})`, so they reach the wire through the #1394 door, which runs
-  # NSInterceptor over each one and stages `pending_auth` on capture. This is
+  # NSInterceptor over each one it wrote and stages `pending_auth` on capture. This is
   # what keeps the +r MODE rendezvous (Task 15) firing for the `IDENTIFY`
   # RecoverIdentity emits — same one-feature-one-code-path discipline as the
   # #189 built-in IDENTIFY at 001 (routed through the same choke point by
