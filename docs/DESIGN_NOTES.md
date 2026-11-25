@@ -9763,3 +9763,75 @@ REGISTER staged, the refused 001 IDENTIFY staged, and a refused GHOST staged.
 The ninth, a WRITTEN 001 IDENTIFY staging its slot, was green before and after.
 The visitor ordering (no `+r` fed before the rotation) was red in both verbs,
 with the stored password back at the old one after the `+r`.
+<!-- entry #2744 -->
+
+---
+
+## 2026-11-25 — #2744: a JOIN waits out the +r defer, and a PART is written only where we are
+
+#347 defers the join plan at 001 for a session that expects an identify, and
+releases it on the `+r` echo, a 401 for NickServ, or the ceiling (#2380).
+#2728's gate asks one question, "registered?", and inside the defer the
+answer is yes — so the door wrote a JOIN straight out while the boot set
+waited. A +R channel answered it with 477, ChanServ did not op an
+unidentified user, and a JOIN of a boot channel went out twice: once from
+the door, once from the plan.
+
+- **`link_phase/1` — `:no_client | :unregistered | :deferring | :ready`.**
+  Derived from guards, never stored: `registered/1` (#2728) and
+  `deferring/1`, which is "the defer timer is a ref". The timer IS the fact
+  "registered, the plan has not fired", so no new key says it twice. It
+  arrives with its first two readers, the JOIN door and the PART cast; the
+  gate head keeps asking `registered/1`, which is the same derivation.
+- **JOIN is `:held` until `:ready`.** `join_channels/3` writes in `:ready`
+  and queues in the other three, so a JOIN accepted inside the defer rides
+  the plan exactly like one accepted before 001, and `join_plan/1`'s dedup
+  against the boot set makes the double write impossible. The hold's log
+  line names the phase it observed (`why_plan_unfired/1`).
+- **The defer is armed for every session that expects an identify, EMPTY
+  plan included.** It used to be armed only for a non-empty plan, which left
+  the commonest credential at the REST door — the invite link, empty boot
+  set, one channel joined after the connect — with no defer at all, and so
+  nothing for its JOIN to wait in; holding through `:deferring` alone would
+  not have reached it. The price is one timer per such connect, and a
+  `/join` there now waits for the `+r` (or the 401, or the ceiling), the wait
+  the boot set has had since #2380. An empty plan's release logs at `info`
+  (`+r defer ended with no JOIN waiting: <signal>`): the two warnings name
+  JOINs that went out unidentified, and an empty plan sent none.
+- **PART is `:local_first`, and the line follows where the ircd can have
+  us.** `part_on_wire?/3`: always in `:ready` (a JOIN may be in flight, and
+  the ircd takes the two in order); in `:deferring` only for a channel that
+  was in `members` before this PART's local cleanup, i.e. one whose own JOIN
+  echo already reached us — every JOIN of ours is held, so that is a forced
+  join (SAJOIN, a services auto-join), and it has to stay leavable; before
+  001 never. Anywhere else the line earned 442 ERR_NOTONCHANNEL.
+- **Two tests were inverted, not weakened.** The #2703 and #2721 tests
+  "a PART during the +r defer …" waited for `PART #gone` on the wire, for a
+  channel nothing had joined; they now refute it and say why. What they
+  exist for — the PART cancels the held JOIN and the boot set's copy — is
+  the local half, and both still assert it.
+
+### Residue, stated
+
+A raw line bypasses the hold: a perform-list `JOIN` (run at 001) or a
+`/quote JOIN` inside the defer goes out at once, because the hold belongs to
+the JOIN verb and a raw line is the operator's own wire. A PART of such a
+channel before its echo lands stays local; the echo then brings the window
+back, and a second PART leaves it.
+
+### Deploy
+
+HOT: no `@type t` or `init/1` key (`Deploy.Preflight` reads both, so a new
+key would be COLD), and no new `handle_call`/`handle_cast` clause.
+`Preflight.cli(…, "jail")` answers HOT from `origin/main` and from the
+branch's base; the last migration commit, as a control, answers COLD.
+
+### Measured
+
+Red first on PR2's head (`00dbeb4ed`), the #347 describe in
+`server_test.exs`: 14 tests, 5 red, as predicted — the JOIN between 001 and
+`+r` with a boot set and with an empty one (written at once), the boot
+channel JOINed inside the defer (written twice), and the two inverted PART
+tests (`PART #gone` written). The forced-join PART was green before and
+after. Split by commit, the two inverted PART tests are red again on the
+JOIN commit and green on the PART one.
