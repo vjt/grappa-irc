@@ -5836,8 +5836,9 @@ defmodule Grappa.Session.Server do
   # (`Visitors.rotate_password/2` — identity-gated so an optimistic commit
   # can't promote an unidentified anon row to permanent, unlike the +r-only
   # `visitor_committer`), users via the #131 sibling `credential_committer`
-  # (`Credentials.commit_password/3`). Returns `state` unchanged — the
-  # commit is a side-effect (DB write), there's no capture slot to stage.
+  # (`Credentials.commit_password/3`). The commit is a side-effect (DB
+  # write) with no capture slot of its own to stage; what it changes in
+  # `state` is the identify slot it supersedes (`supersede_staged_identify/2`).
   #
   # #2371 — a USER session commits only while wearing the configured nick:
   # `do_set_password` rotates the WORN nick's account, and a rotation of any
@@ -5862,8 +5863,22 @@ defmodule Grappa.Session.Server do
   defp rotate_set_passwd(state, new_password) do
     {result, meta} = rotate_stored_password(state, new_password)
     log_set_passwd_commit(result, meta)
-    state
+    supersede_staged_identify(state, result)
   end
+
+  # A rotation that committed makes the secret still staged for the `+r`
+  # rendezvous stale. The slot is typically the 001 built-in IDENTIFY's,
+  # waiting on its `+r`: left in place, that `+r` would commit the OLD
+  # secret over the one just stored (`{:identity_secret_confirmed, _}` on a
+  # visitor), while services now hold the new one. A rotation that did not
+  # commit changed nothing stored, so the slot stays.
+  @spec supersede_staged_identify(t(), {:ok, term()} | {:error, term()}) :: t()
+  defp supersede_staged_identify(state, {:ok, _}) do
+    :ok = cancel_and_drain(state.pending_auth_timer, :pending_auth_timeout)
+    %{state | pending_auth: nil, pending_auth_timer: nil}
+  end
+
+  defp supersede_staged_identify(state, {:error, _}), do: state
 
   # Picks the committer for this subject and runs it, returning the result
   # plus the Logger metadata naming the credential home. Shared by the two
@@ -5909,14 +5924,15 @@ defmodule Grappa.Session.Server do
     if configured_nick?(state, target_nick) do
       {result, meta} = rotate_stored_password(state, new_password)
       log_reset_passwd_commit(result, meta)
+      supersede_staged_identify(state, result)
     else
       Logger.debug(
         "RESETPASS targets another account (#{target_nick}) — this credential left alone",
         verb: :ns_reset_passwd
       )
-    end
 
-    state
+      state
+    end
   end
 
   defp log_reset_passwd_commit({:ok, _}, meta) do
