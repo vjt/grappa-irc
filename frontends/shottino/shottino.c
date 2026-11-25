@@ -28767,6 +28767,11 @@ static void ircd_message_line(const struct ircd_hist *h, const char *own, bool t
     const char *target = h->channel;
     if (!is_channel_name(h->channel) && !ircd_name_equal(h->sender, own)) target = own;
 
+    /* Empty unless an arm writes it. Every caller sends the line only if it
+     * is non-empty, and the shipped Makefile keeps -Wswitch a warning, so a
+     * kind no arm names would otherwise send whatever the caller's stack
+     * buffer held to every bridged client. */
+    if (out_sz) out[0] = '\0';
     switch (h->kind) {
     case MSG_PRIVMSG:
         snprintf(out, out_sz, "%s:%s PRIVMSG %.64s :%s", tag, prefix, target, body);

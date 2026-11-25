@@ -1015,8 +1015,29 @@ TEST(presence_rows_render_route_and_bridge_what_meta_says) {
     free(app);
 }
 
+/* A kind no arm of ircd_message_line names is bridged as nothing, not as
+ * the caller's buffer: the callers send the line only when it is
+ * non-empty, and before the line was cleared that buffer was an
+ * uninitialised stack array. The value is one past the last enumerator,
+ * what a MSG_* added without its arm looks like under the shipped
+ * Makefile, where -Wswitch is a warning. */
+TEST(a_kind_no_arm_names_bridges_nothing) {
+    struct ircd_hist h = {.id = 1, .server_time = 1};
+    h.kind = (wire_message_kind)(MSG_SERVER_EVENT + 1);
+    snprintf(h.network, sizeof(h.network), "azzurra");
+    snprintf(h.channel, sizeof(h.channel), "#sniffo");
+    snprintf(h.sender, sizeof(h.sender), "bob");
+    snprintf(h.body, sizeof(h.body), "hi");
+    char out[IRCD_LINE_MAX + 256];
+    memset(out, 'X', sizeof(out) - 1);
+    out[sizeof(out) - 1] = '\0';
+    ircd_message_line(&h, "vjt", false, false, NULL, out, sizeof(out));
+    CHECK_LONG(strlen(out), 0);
+}
+
 int main(void) {
     RUN(presence_rows_render_route_and_bridge_what_meta_says);
+    RUN(a_kind_no_arm_names_bridges_nothing);
     test_use_temp_home();
 
     RUN(bind_spec_reads_ports_addresses_and_both_families);
