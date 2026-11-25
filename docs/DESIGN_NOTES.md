@@ -9469,3 +9469,85 @@ confirm always lands after 001. The ExUnit pin in `#2703a` owns that property.
   the join. That is issue 2719, ruled out of scope here.
 * The toast is the only answer to a refused attach. There is no retry
   affordance, and the link can simply be clicked again.
+<!-- entry #2721 -->
+
+---
+
+## 2026-11-25 — #2721: a PART takes its channel out of the boot set, and before 001 it stays local
+
+`Session.Server`'s `state.autojoin` is written once, by `init/1`, from
+`merge_autojoin(autojoin_channels, last_joined_channels)`. A PART takes the
+channel out of both columns: `ChannelsController.delete/2` edits the subject's
+source, and the cast's own snapshot write subtracts it from
+`last_joined_channels`. The in-memory copy kept it. So a PART before 001, or
+inside the `#347` +r defer, was undone by the join plan, and the JOIN echo
+wrote the channel back into `last_joined_channels` for the next boot to
+rejoin as well. w1 found it reviewing PR 2720. Every later path that reads
+the set for a JOIN goes through a fresh `init/1` first, so these two windows
+were the only live ones.
+
+### The cure keeps the copy in step
+
+The PART cast drops the folded key from `state.autojoin`
+(`drop_from_autojoin/2`), next to the `dequeue_join/2` it already does for
+the JOINs held for 001. No new structure. The shape floated on the issue, a
+parted-this-session set read by the plan alone, would be a second structure
+with its own housekeeping on a re-JOIN and on a reconnect, protecting an
+answer the DB no longer gives.
+
+The set was never "the operator's boot set", which is what its typedoc said:
+it has always carried the `last_joined` snapshot too, for both subject kinds.
+The comments now say what it is. The narrowing is one-way: a JOIN still never
+widens it, which is issue 2114's decision for the queued JOINs, kept.
+
+The cast is the only place that narrows it. An upstream PART echo arrives
+after the plan has fired, and a self-KICK is not a departure (issue 2317).
+
+### A declared change to the `#116` ChanServ gate
+
+`maybe_request_chanserv_invite/3` reads the same set as `in_autojoin?`. So a
+boot channel that the subject PARTs and then re-JOINs by hand in the same
+session, earning a 473 or 475, no longer sends `PRIVMSG ChanServ :INVITE`.
+Until now it did, once per session.
+
+This is `#116`'s own rule applied inside a session. Its 2026-06-28 entry
+says "Autojoin-vs-manual is derived, not flagged … A manual `/join` of a
++i/+k channel hits the same numerics but isn't in the set → stays `:failed`",
+and a re-JOIN after a PART is a manual `/join`. It is also what the next boot
+already answers, since the channel is in neither column any more. Before this
+change the answer depended on whether the session had restarted in between.
+The orch ruled it on the phase-1 report, and a test pins it.
+
+### Before 001 the PART stays local
+
+Before 001 the session is in no upstream channel, so a PART has nothing to
+leave, and an ircd answers any command from an unregistered client with 451.
+The cast now runs its local cleanup and skips the send while
+`registration_pending?/1` holds, which is the gate that holds a JOIN for 001
+(issue 2703). Tests that sent a PART on a session the fake never registered
+and waited for the line now register first with `IRCServer.register/3`, as
+the JOIN tests did after issue 2703.
+
+### Tests, and why there is no e2e
+
+ExUnit pins all four effects:
+
+* the pre-001 plan;
+* the +r-defer plan;
+* the persisted snapshot, through a fake that echoes JOINs;
+* the gate.
+
+Each was red first at its refute, with its instrument passing. A fifth test
+pins the pre-001 PART staying off the wire.
+
+There is no e2e. Both windows are milliseconds wide: socket-up to 001, and
+001 to a local `azzurra-services` +r echo. A browser PART cannot be placed
+inside either one reliably. That is the reason issue 2703's 001 ordering is
+owned by ExUnit too.
+
+### Not in this change
+
+An operator editing `autojoin_channels` through the admin REST while the
+session is live does not refresh `state.autojoin` until the next `init/1`.
+That is the same staleness with a different trigger, running in both
+directions. It is issue 2724.
