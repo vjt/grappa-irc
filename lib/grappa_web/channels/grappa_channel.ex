@@ -2168,6 +2168,7 @@ defmodule GrappaWeb.GrappaChannel do
       {:error, :invalid_line} -> {:reply, {:error, %{error: "invalid_line"}}, socket}
       :error -> {:reply, {:error, %{error: "user_not_found"}}, socket}
       {:error, :no_session} -> {:reply, {:error, %{error: "no_session"}}, socket}
+      {:error, :not_registered} -> {:reply, {:error, %{error: "not_registered"}}, socket}
       {:error, _} -> {:reply, {:error, %{error: "persist_failed"}}, socket}
     end
   end
@@ -2296,6 +2297,12 @@ defmodule GrappaWeb.GrappaChannel do
       # `nothing_to_recover` as its "nothing to do" outcome).
       {:error, :not_connected} ->
         {:reply, {:error, %{error: "no_session"}}, socket}
+
+      # issue 2728 — refused before any write: the network has not
+      # registered us yet. Not `upstream_unavailable` (the catch-all below):
+      # nothing upstream failed, and the same verb succeeds after 001.
+      {:error, :not_registered} ->
+        {:reply, {:error, %{error: "not_registered"}}, socket}
 
       {:error, :not_visitor} ->
         {:reply, {:error, %{error: "forbidden"}}, socket}

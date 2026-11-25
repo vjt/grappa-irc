@@ -191,6 +191,12 @@ function friendlyKnown(err: ApiError, code: ErrorJSONRestErrorToken): string {
       // `:parked` or `:failed` state, OR `/disconnect` against an
       // already-disconnected network. Compose-box-time error.
       return "That network isn't in a state to connect or disconnect right now.";
+    case "not_registered":
+      // issue 2728 — 503: the session refused an IRC verb before anything was
+      // sent, because the network has not registered us yet (no 001). Not
+      // `upstream_unreachable`: nothing failed, and the same request works
+      // once the connection completes.
+      return "Still connecting to this network — try again in a moment.";
     case "upstream_unreachable":
       // M-9a — DNS / TCP-level reach failure for a network the operator
       // tried to /connect. Distinct from `network_unreachable`

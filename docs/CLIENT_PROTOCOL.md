@@ -910,8 +910,10 @@ per sender, so it could never be reassembled) or one that needs more than
 429 `rate_limited` when the peer's or the connection's queue cannot take
 the whole message, or for a `keyreq` while a KEYS from that peer is still
 arriving (asking again then only doubles its cost); 404 `not_found` with no
-session on the network; 502 `upstream_unreachable` while the upstream link
-is down; 504 `session_timeout` if the session does not answer.
+session on the network; 503 `not_registered` (v68) while the network has
+not registered the session yet (no 001 — nothing was sent, retry once
+connected); 502 `upstream_unreachable` while the upstream link is down; 504
+`session_timeout` if the session does not answer.
 
 **Channel messages (v63).** One encrypted message, sent ONCE as a PRIVMSG
 to the channel — IRC multicast does the fan-out for free, so a channel

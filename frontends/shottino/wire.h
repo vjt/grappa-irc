@@ -53,17 +53,16 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v66 -> v67 (issue 2694):
- * no byte on the wire moved. What moved is cicchetto's generated mirror:
- * wireTypes.ts / wireSchema.ts gain the web views' types and seven named
- * response envelopes, and the error-token arrays are renamed ERROR_JSON*.
- * What this client reads from wireTypes.ts is six closed sets
- * (tests/test_commands.c): the five E2E ones and SCROLLBACK_MESSAGE_KIND,
- * none of which the regeneration touched; nothing here changes.
+ * Last read, v67 -> v68 (issue 2728):
+ * one new error token on both transports, `not_registered` (REST 503):
+ * the session refused an IRC verb because the network has not registered
+ * it yet (no 001). This client maps no error tokens — a refused send
+ * prints the server's reply as it already does for every other refusal —
+ * so nothing here changes.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 67
+#define WIRE_PROTOCOL_VERSION 68
 
 #include <stdbool.h>
 #include <stddef.h>

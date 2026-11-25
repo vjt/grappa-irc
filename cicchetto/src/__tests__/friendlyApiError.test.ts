@@ -48,6 +48,8 @@ const CASES: Array<{ code: string; matches: RegExp; info?: Record<string, unknow
   // T32 connect/disconnect compose-time errors (U-3 newly mapped)
   { code: "not_connected", matches: /isn't in a state to connect or disconnect/i },
   { code: "upstream_unreachable", matches: /couldn't reach the upstream irc server/i },
+  // issue 2728 — an IRC verb refused before 001.
+  { code: "not_registered", matches: /still connecting to this network/i },
   // #40 — 433 nick-in-use at login, issue 2673's 437 reserved nick, and
   // visitor /nick rename collision. Issue 2679: "isn't available", because
   // nobody holds a 437 nick, so "already in use" was false for it.
