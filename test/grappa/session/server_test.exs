@@ -1938,6 +1938,23 @@ defmodule Grappa.Session.ServerTest do
       assert :ok = Session.send_join({:user, user.id}, network.id, "#gone", nil)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
+      # The PART must land INSIDE the defer, not before 001: the cast is one
+      # hop to the Server and the 001 is four, so without a barrier the PART
+      # wins and this is the pre-001 test again. The 001 handler writes the
+      # IDENTIFY synchronously and stamps `registered_at` last, so once the
+      # line is on the fake, `get_state` returns after the whole handler.
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          &(&1 == "PRIVMSG NickServ :IDENTIFY s3cr3t-identify\r\n"),
+          1_000
+        )
+
+      assert %DateTime{} = Map.get(:sys.get_state(pid), :registered_at)
+
+      refute Enum.any?(IRCServer.sent_lines(server), &String.starts_with?(&1, "JOIN")),
+             "the defer was not armed: the plan fired at 001"
+
       assert :ok = Session.send_part({:user, user.id}, network.id, "#gone", nil)
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PART #gone\r\n"), 1_000)
 
