@@ -9418,12 +9418,17 @@ a stranger enumerate what a deployment carries.
 HomePane's "Available to connect" row had the attach body inline: `addNetwork`,
 then `refetchUser` + `refetchNetworks`. It moves to `lib/networkAttach.ts`
 (`attachNetwork`), and both doors call it. The verb throws what `addNetwork`
-throws and re-reads nothing on a refusal, so each door keeps its own error
-surface. The home row prints inline. The invite raises its toast with the
-server's reason in localized copy (`errorMessage`). The invite reads exactly
-one refusal as success: 409 `already_attached`, meaning another tab of the
-same account won the race. The network IS there, and the winning tab's
-`network_attached` broadcast brings it into this tab's list.
+throws, so each door keeps its own error surface. The home row prints inline.
+The invite raises its toast with the server's reason in localized copy
+(`errorMessage`). The invite reads exactly one refusal as success: 409
+`already_attached`, meaning another tab of the same account won the race and
+the network IS attached. So the verb re-reads on that 409 exactly as on a 204,
+then throws it for the door to read; any other refusal re-reads nothing. The
+winning tab's `network_attached` broadcast cannot stand in for that read:
+Phoenix PubSub does not replay, so a tab whose user topic joins after the
+broadcast never sees it, and its invite would wait for a network row with no
+answer. (w1's review of PR 2722 found the version that relied on the
+broadcast.)
 
 ### The join question waits for the network row
 
@@ -9434,7 +9439,11 @@ network row that exists. The wait is a one-shot effect, the same shape as
 `deferUntilReady`, in a disposing root that the moduleRoot guard admits. It is
 bounded by the identity that clicked (`identityMoved`), not by a timer: after a
 logout or an account switch it ends without asking anyone, so the consent
-question cannot land on an account that did not click.
+question cannot land on an account that did not click. One exit is still
+open: a re-read that itself fails (a blip on `GET /networks`) leaves the wait
+running until the identity ends. The re-reads are fire-and-forget behind the
+issue 2059 coalescing queue, so the verb cannot see them fail, and making them
+observable changes `networks.ts`'s refetch contract for every caller.
 
 The consent itself stays (issue 2703, Q2). The ruling removes the modal for
 the CONNECTION. A joined channel is a presence other people see, so it keeps

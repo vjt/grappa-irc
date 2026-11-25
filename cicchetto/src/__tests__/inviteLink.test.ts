@@ -10,6 +10,7 @@ import {
   routeInviteTarget,
 } from "../lib/inviteLink";
 import { attachNetwork } from "../lib/networkAttach";
+import { refetchNetworks } from "../lib/networks";
 
 // #793 — shareable channel invite links: `irc.sindro.me/?go=azzurra/sniffo`.
 //
@@ -37,6 +38,17 @@ const live = vi.hoisted(() => ({
   setBound: (_slugs: readonly string[]): void => {},
   setToken: (_t: string | null): void => {},
   available: [] as string[],
+  // What the SERVER holds. `refetchNetworks` copies it into the bound set,
+  // so a test can let the re-read bring a network in, rather than simulate a
+  // broadcast this tab may never see.
+  serverBound: ["azzurra"] as readonly string[],
+}));
+
+const h = vi.hoisted(() => ({ addNetwork: vi.fn<(t: string, slug: string) => Promise<void>>() }));
+
+vi.mock("../lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/api")>()),
+  addNetwork: (t: string, slug: string) => h.addNetwork(t, slug),
 }));
 
 vi.mock("../lib/networks", async () => {
@@ -50,6 +62,8 @@ vi.mock("../lib/networks", async () => {
     networkBySlug: (slug: string) =>
       bound().includes(slug) ? { id: 1, slug, kind: "user" } : undefined,
     channelsBySlug: vi.fn(() => ({ azzurra: [{ id: 10, name: "#bofh" }] })),
+    refetchUser: vi.fn(),
+    refetchNetworks: vi.fn(() => setBound(live.serverBound)),
   };
 });
 
@@ -70,6 +84,11 @@ vi.mock("../lib/home", () => ({
 }));
 
 vi.mock("../lib/networkAttach", () => ({ attachNetwork: vi.fn() }));
+
+// The real verb, for the test that is about what the verb re-reads. Its own
+// imports still resolve to the mocks above.
+const { attachNetwork: realAttachNetwork } =
+  await vi.importActual<typeof import("../lib/networkAttach")>("../lib/networkAttach");
 
 describe("parseInviteLinkUrl", () => {
   it("reads ?go=<network>/<channel> and implies the # sigil", () => {
@@ -254,9 +273,12 @@ describe("routeInviteTarget, available network", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     for (const t of inviteToasts()) dismissInviteToast(t.id);
+    vi.mocked(attachNetwork).mockReset();
+    h.addNetwork.mockReset();
     live.setBound(["azzurra"]);
     live.setToken("tok");
     live.available = ["azzurra2"];
+    live.serverBound = ["azzurra"];
   });
 
   it("attaches it with no modal, and asks to join only once it is bound", async () => {
@@ -277,14 +299,20 @@ describe("routeInviteTarget, available network", () => {
   });
 
   it("goes on to the join when the attach answers 409 already_attached", async () => {
-    // Another tab of the same account won the race: the network IS attached,
-    // and the `network_attached` broadcast brings it into this tab's list.
-    vi.mocked(attachNetwork).mockRejectedValue(new ApiError(409, "already_attached"));
+    // Another tab of the same account won the race: the network IS attached
+    // on the server. The verb re-reads on a 409 as on a 204, so the network
+    // reaches this tab through the read it asked for. The winning tab's
+    // `network_attached` broadcast is not replayed to a topic joined after it,
+    // so nothing here simulates one: the real verb runs, and only its re-read
+    // can bring the network in.
+    live.serverBound = ["azzurra", "azzurra2"];
+    h.addNetwork.mockRejectedValue(new ApiError(409, "already_attached"));
+    vi.mocked(attachNetwork).mockImplementation(realAttachNetwork);
     routeInviteTarget(disagio);
-    await vi.waitFor(() => expect(attachNetwork).toHaveBeenCalled());
 
-    live.setBound(["azzurra", "azzurra2"]);
     await vi.waitFor(() => expect(confirmJoinChannel).toHaveBeenCalledWith("azzurra2", "#disagio"));
+    expect(h.addNetwork).toHaveBeenCalledWith("tok", "azzurra2");
+    expect(refetchNetworks).toHaveBeenCalled();
     expect(inviteToasts()).toHaveLength(0);
   });
 

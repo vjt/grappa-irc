@@ -1,4 +1,4 @@
-import { addNetwork } from "./api";
+import { ApiError, addNetwork } from "./api";
 import { refetchNetworks, refetchUser } from "./networks";
 
 // issue 2703 — THE attach verb: put an available network on this session.
@@ -23,13 +23,28 @@ import { refetchNetworks, refetchUser } from "./networks";
 // included; the explicit pair here is the read-after-write for the tab that
 // asked, which must not wait on a socket it may not have yet.
 //
-// Throws what `addNetwork` throws — an `ApiError` carrying the server's token
-// (403 `network_not_visitor_enabled`, 409 `already_attached`, 503 caps and
-// circuit). Each caller owns its own error surface, and the two differ: the
-// home row prints inline, the invite raises a toast, and only the invite reads
-// a 409 as "attached, go on".
+// A 409 `already_attached` gets the same two reads. It means another tab of
+// the account won the race and the network IS attached now, exactly as after
+// a 204. The winning tab's broadcast is no substitute: Phoenix PubSub does not
+// replay, so a tab whose user topic joins after it never sees it, and a door
+// waiting for the network would wait with no answer.
+//
+// Throws what `addNetwork` throws, the 409 included, after its reads: an
+// `ApiError` carrying the server's token (403 `network_not_visitor_enabled`,
+// 409 `already_attached`, 503 caps and circuit). Each caller owns its own
+// error surface, and the two differ: the home row prints inline, the invite
+// raises a toast, and only the invite reads a 409 as "attached, go on".
 export async function attachNetwork(token: string, networkSlug: string): Promise<void> {
-  await addNetwork(token, networkSlug);
+  try {
+    await addNetwork(token, networkSlug);
+  } catch (err) {
+    if (err instanceof ApiError && err.code === "already_attached") rereadAttached();
+    throw err;
+  }
+  rereadAttached();
+}
+
+function rereadAttached(): void {
   refetchUser();
   refetchNetworks();
 }

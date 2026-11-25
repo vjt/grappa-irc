@@ -246,9 +246,9 @@ async function attachThenJoin(target: PushTarget): Promise<void> {
   whenBound(t, target);
 }
 
-// The attach answers 204 before the network is in `networks()`: the two
-// re-reads (or, after a 409, the winning tab's `network_attached` broadcast)
-// bring it in a round-trip later. The join question waits for it, for two
+// The attach answers 204 (or 409, when another tab won the race) before the
+// network is in `networks()`: the verb's two re-reads, which run on either
+// answer, bring it in a round-trip later. The join question waits for it, for two
 // reasons. A modal naming a network the sidebar does not show yet would be
 // strange. And the window the join opens belongs under a network row that
 // exists. Same shape as `deferUntilReady` in pushTarget.ts: a one-shot effect
@@ -258,8 +258,10 @@ async function attachThenJoin(target: PushTarget): Promise<void> {
 // logs out, or another one logs in, the effect ends without acting
 // (`identityMoved`), so the consent question never reaches an account that did
 // not click. A network that never appears leaves the effect waiting until that
-// identity ends. It cannot happen on a 204, which guarantees the row the
-// re-reads fetch.
+// identity ends. After a 204 or a 409 the server holds the row the re-reads
+// fetch, so the data rules that out; a re-read that itself fails does not, and
+// that exit has no answer of its own yet (the re-reads are fire-and-forget, so
+// the verb cannot see them fail).
 function whenBound(t: string, target: PushTarget): void {
   createRoot((dispose) => {
     createEffect(() => {
