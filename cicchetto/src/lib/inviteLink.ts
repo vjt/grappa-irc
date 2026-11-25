@@ -1,5 +1,12 @@
+import { createEffect, createRoot, untrack } from "solid-js";
+import { ApiError, assertNever } from "./api";
+import { token } from "./auth";
 import { confirmJoinChannel, switchToChannelWindow } from "./channelJoin";
 import { canonicalChannel } from "./channelKey";
+import { errorMessage } from "./friendlyApiError";
+import { homeData } from "./home";
+import { identityMoved } from "./identityMoved";
+import { attachNetwork } from "./networkAttach";
 import { channelsBySlug, networkBySlug } from "./networks";
 import type { PushTarget } from "./pushPayload";
 import { createToastQueue } from "./toasts";
@@ -130,14 +137,33 @@ export function parseInviteLinkUrl(rawUrl: string): PushTarget | null {
   return { networkSlug, channelName, kind: "channel" };
 }
 
-// Open decision 1 of #793, deliberately NOT settled here: `networkBySlug`
-// resolves against THIS user's bound networks, but an invite is cross-user by
-// definition, so the recipient may have no `azzurra` at all. Whether the
-// network segment becomes a globally-resolvable identifier or the flow grows
-// an "add this network, then join" step is a product decision that has not
-// been taken. What this branch must not do is fail silently: somebody clicked
-// a link and is owed an answer, so it says what it observed and stops.
-type InviteToast = { networkSlug: string };
+// Issue 2703 settles #793's open decision 1. The network segment stays a slug
+// on THIS server, never a global identifier. When the recipient has not bound
+// that network, `/me`'s `home_data.available_networks` gives the server's
+// answer to "may this subject bind it?". A visitor is offered the
+// `visitor_enabled` networks; a user is offered those plus their own detached
+// ones, minus what is attached. That list is exactly what
+// `POST /session/networks` accepts, so it is the gate, and cic keeps no list of
+// its own.
+//
+//   * Bound          -> the #648 confirm-then-join (or a plain switch).
+//   * Available      -> attach it with NO modal of its own (vjt: "senza modale
+//                       autoconnect"), then the same #648 question once the
+//                       network is in the list. The join consent stays: an
+//                       attached network is a session, and a joined channel is
+//                       a presence other people see.
+//   * Neither        -> the toast. "Not on this server" and "not for you" read
+//                       the same, deliberately: two answers would let a
+//                       stranger enumerate what a deployment carries.
+//
+// The attach can fail (403, 503 caps, a network blip), and the person who
+// clicked is owed the reason, so the toast carries the server's refusal in its
+// localized copy. The one refusal it does NOT raise is 409 `already_attached`:
+// that means another tab of the same account won the race, the network IS
+// there, and the join goes ahead.
+type InviteToast =
+  | { networkSlug: string; reason: "unavailable" }
+  | { networkSlug: string; reason: "attach_failed"; message: string };
 
 const queue = createToastQueue<InviteToast>();
 
@@ -145,20 +171,107 @@ export const inviteToasts = queue.toasts;
 export const dismissInviteToast = queue.dismiss;
 
 /**
+ * The toast's sentence. It sits beside the producer rather than inline in
+ * Toasts.tsx so that a new `reason` fails tsc right here (`assertNever`), and
+ * so that the tests and the e2e can match the production copy instead of a
+ * retyped string.
+ */
+export function inviteToastText(toast: InviteToast): string {
+  switch (toast.reason) {
+    case "unavailable":
+      return `Invite for ${toast.networkSlug} — that network is not available here.`;
+    case "attach_failed":
+      return `Invite for ${toast.networkSlug} — ${toast.message}`;
+    default:
+      return assertNever(toast);
+  }
+}
+
+/**
  * Applies a parsed invite: confirm-then-join on a bound network, a plain
- * switch when we are already in the channel, a visible notice when the
- * network is not bound for this recipient.
+ * switch when we are already in the channel, attach-then-confirm on a network
+ * the recipient may bind, and a visible notice for any other slug.
  */
 export function routeInviteTarget(target: PushTarget): void {
-  if (networkBySlug(target.networkSlug) === undefined) {
-    queue.queue({ networkSlug: target.networkSlug });
+  if (networkBySlug(target.networkSlug) !== undefined) {
+    routeBoundTarget(target);
     return;
   }
+  if (!isAvailable(target.networkSlug)) {
+    queue.queue({ networkSlug: target.networkSlug, reason: "unavailable" });
+    return;
+  }
+  void attachThenJoin(target);
+}
+
+function routeBoundTarget(target: PushTarget): void {
   if (alreadyInChannel(target.networkSlug, target.channelName)) {
     switchToChannelWindow(target.networkSlug, target.channelName);
     return;
   }
   confirmJoinChannel(target.networkSlug, target.channelName);
+}
+
+function isAvailable(networkSlug: string): boolean {
+  const available = homeData()?.available_networks ?? [];
+  return available.some((n) => n.slug === networkSlug);
+}
+
+async function attachThenJoin(target: PushTarget): Promise<void> {
+  const t = token();
+  if (t === null) {
+    // The post-logout race. Rare, but it is an exit like any other and the
+    // person who clicked is owed an answer for it too.
+    queue.queue({
+      networkSlug: target.networkSlug,
+      reason: "attach_failed",
+      message: "not signed in",
+    });
+    return;
+  }
+  try {
+    await attachNetwork(t, target.networkSlug);
+  } catch (err) {
+    if (identityMoved(t)) return;
+    if (!(err instanceof ApiError && err.code === "already_attached")) {
+      queue.queue({
+        networkSlug: target.networkSlug,
+        reason: "attach_failed",
+        message: errorMessage(err),
+      });
+      return;
+    }
+  }
+  if (identityMoved(t)) return;
+  whenBound(t, target);
+}
+
+// The attach answers 204 before the network is in `networks()`: the two
+// re-reads (or, after a 409, the winning tab's `network_attached` broadcast)
+// bring it in a round-trip later. The join question waits for it, for two
+// reasons. A modal naming a network the sidebar does not show yet would be
+// strange. And the window the join opens belongs under a network row that
+// exists. Same shape as `deferUntilReady` in pushTarget.ts: a one-shot effect
+// on the store the next step reads.
+//
+// It is bounded by the IDENTITY, not by a timer. If the account that clicked
+// logs out, or another one logs in, the effect ends without acting
+// (`identityMoved`), so the consent question never reaches an account that did
+// not click. A network that never appears leaves the effect waiting until that
+// identity ends. It cannot happen on a 204, which guarantees the row the
+// re-reads fetch.
+function whenBound(t: string, target: PushTarget): void {
+  createRoot((dispose) => {
+    createEffect(() => {
+      if (identityMoved(t)) {
+        dispose();
+        return;
+      }
+      if (networkBySlug(target.networkSlug) === undefined) return;
+      dispose();
+      untrack(() => routeBoundTarget(target));
+    });
+  });
 }
 
 // "Already in that channel -> just switch, no modal" (#648's rule, restated by
