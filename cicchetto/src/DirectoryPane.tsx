@@ -15,11 +15,11 @@ import {
   setSort,
   triggerRefresh,
 } from "./lib/channelDirectory";
-import { joinChannel } from "./lib/channelJoin";
-import { canonicalChannel, channelKey } from "./lib/channelKey";
+import { joinChannel, switchToChannelWindow } from "./lib/channelJoin";
+import { channelKey } from "./lib/channelKey";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { bindPullGesture, PULL_COMMIT_PX } from "./lib/pullGesture";
-import { closeToPreviousWindow, setSelectedChannel } from "./lib/selection";
+import { closeToPreviousWindow } from "./lib/selection";
 import { windowStateByChannel } from "./lib/windowState";
 import { MircBody } from "./MircText";
 
@@ -251,14 +251,10 @@ const DirectoryRow: Component<DirectoryRowProps> = (props) => {
   // channel you asked for. Automatic re-joins still never steal focus.
   const onActivate = () => {
     if (isJoined()) {
-      // #731 — folded, for the same reason as onJoin: `isJoined()` above
-      // already folds through `channelKey`, so focusing the raw name targets
-      // a different key than the one that just answered "joined".
-      setSelectedChannel({
-        networkSlug: props.networkSlug,
-        channelName: canonicalChannel(props.entry.name),
-        kind: "channel",
-      });
+      // #731 — the FOLDED key, which `switchToChannelWindow` derives:
+      // `isJoined()` above folds through `channelKey`, so focusing the raw
+      // name would target a different key than the one that answered.
+      switchToChannelWindow(props.networkSlug, props.entry.name);
       return;
     }
     void onJoin();
