@@ -9631,3 +9631,74 @@ reads `autojoin_channels` on a JOIN. It now puts autojoin with the fields read
 at the next spawn. `Operator.update_credential/3`'s doc, the admin PATCH
 moduledoc and the `state.autojoin` typedoc say the same. No code, no test, no
 wire.
+<!-- entry #2728 -->
+
+---
+
+## 2026-11-25 — #2728: one "registered?" question, and a gate on every verb that writes a line
+
+### What was wrong
+
+`Session.Server` had no single fact for "the network has registered us".
+Each reader used a proxy: the seven message verbs refused only with NO Client
+(`%{client: nil}` → `no_socket`), the directory refresh had its own
+client-nil head (`not_connected`), JOIN and PART read
+`registration_pending?/1` (`registered_at` nil, absent key = registered), and
+the CAP NEW re-REQ, the keepnick arm and the live-nick publish read
+`Map.get(state, :registered_at) != nil` (absent key = NOT registered — the
+opposite default). About thirty other verbs that write a line read nothing.
+
+So in the window between the socket coming up and 001 RPL_WELCOME, a PRIVMSG
+was persisted, broadcast, answered `{:ok, %Message{}}` and written to an ircd
+that drops it with 451; a `/links` primed its accumulator and locked the retry
+out with `links_in_flight`; a `/nick` changed `state.nick` and was undone by
+the 001 nick reclaim (issue 2745 case 1); an `e2e_ask` committed its request
+row. Measured red on main for each, before the fix.
+
+### What changed
+
+- **One derivation, `registered/1`** (a guard): a Client exists AND
+  `registered_at` is not nil, with issue 2703's absent-key rule kept (a
+  process with no key predates 2097 and registered long ago) as the ONE rule
+  for every reader. Every proxy above now asks it; `registration_pending?/1`
+  is gone.
+- **`@verb_policy`**, every request tag `handle_call/3` and `handle_cast/2`
+  answer → `:needs_registered | :held | :local_first | :desired_state |
+  :local`. `Grappa.Session.VerbPolicy` checks the table against the clauses
+  at compile time, both ways (unclassified tag, entry nobody answers, policy
+  outside the set), so a new verb is a compile error until it is classified —
+  the `Record<WindowState, …>` posture of #2693 on the server side. Done with
+  `@before_compile` + `Module.get_definition/2`, not the AST-test fallback:
+  the definitions are already expanded there, the check costs no test run,
+  and it fails at the line that matters.
+- **One gate head** refuses every `:needs_registered` verb with
+  `{:error, :not_registered}` before its own clause runs — no row, no
+  accumulator, no credential staged, no state mutated. 36 verbs, including
+  `send_nick`, `send_quit`, `refresh_directory` and `recover_identity`.
+  Only `:needs_registered` is read by code; the other four policies record
+  the decision per verb (JOIN is held, PART runs its local half, the away and
+  notify verbs record desired state for the 001 reconcile).
+- **`not_registered` is a new wire token on both transports** (vjt's ruling
+  D1-A): REST 503, the channel push reply `not_registered`, cic copy "Still
+  connecting to this network — try again in a moment." Not
+  `no_socket`/`upstream_unreachable`: that names a socket failure, and here a
+  socket exists and nothing failed. Protocol 68.
+- **001 stamps `registered_at` FIRST.** The perform list, the away
+  re-assert and the join plan used to run on a state that still read "not
+  registered". Nothing on that path asked the question yet (read, every
+  reader); stamped first, nothing on it can get the wrong answer once one
+  does — the #2744 join hold is the next.
+- `Session.send_part/4`'s spec no longer advertises a transport error a cast
+  cannot return (ruling D4: PART stays a cast).
+- Two comments claimed `Deploy.Preflight` "has nothing to read" for this
+  module's plain-map state. False: it reads `@type t` and the `init/1` map
+  literal, so a new state key is COLD; the `Map.get` shims cover a forced
+  hot reload only.
+
+### What it does not do
+
+The window between 001 and the `+r` defer firing (issue 2744), a held JOIN
+lost when the attempt dies (2742), a `:pending` window that never ends
+(2740), and the away rename before 001 (2745 cases 2–3) are separate PRs on
+top of this one. `e2e_bank_ms/1`'s `%{client: nil}` clause stays: it asks
+whether there is a Client to ask, which is not the registration question.
