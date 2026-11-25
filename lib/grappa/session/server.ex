@@ -8391,10 +8391,11 @@ defmodule Grappa.Session.Server do
   # `Map.get/3` rather than `state.nickserv_secret_staged?`, and rather than a
   # second function clause: this is the hot-reload shim the file applies to
   # every new state key (`Map.get(state, :isupport, …)`, `Map.get(state,
-  # :umodes, [])`). It is NOT redundant here — `state` is a plain MAP, so
-  # `Deploy.Preflight`, which refuses a hot deploy on a changed `defstruct`,
-  # has nothing to read and would let one through, and a module reload does
-  # not rewrite live process state. A second clause expresses the same thing
+  # :umodes, [])`). `Deploy.Preflight` does read this module's `@type t` and
+  # its `init/1` map literal (`collect_state_blocks/1`), so a normal deploy
+  # adding a key is COLD and every live process gets the key at boot; the
+  # shim covers a FORCED hot reload, which a module reload does not follow
+  # by rewriting live process state. A second clause expresses the same thing
   # but Dialyzer proves it unreachable FROM THE TYPE (`t()` declares the key
   # required) and reports `pattern_match_cov`, so the shim has to be a lookup
   # rather than a pattern. The default is the pre-#1044 rule, which is exactly
@@ -8798,9 +8799,9 @@ defmodule Grappa.Session.Server do
 
   # `Map.get`, not `state.queued_joins`: the hot-reload shim this file applies
   # to every new state key (`Map.get(state, :isupport, …)`, `Map.get(state,
-  # :umodes, [])`). A live pre-2114 process reloaded mid-session has no such
-  # key, and `Deploy.Preflight` cannot catch it — `state` is a plain map, so
-  # there is no `defstruct` change for it to refuse the hot deploy on.
+  # :umodes, [])`). `Deploy.Preflight` reads `@type t` and the `init/1` map
+  # literal, so adding the key classified the deploy COLD; the lookup covers
+  # a pre-2114 process FORCE-reloaded mid-session, which has no such key.
   @spec queued_joins(t()) :: [{String.t(), String.t() | nil}]
   defp queued_joins(state), do: Map.get(state, :queued_joins, [])
 
