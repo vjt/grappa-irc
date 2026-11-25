@@ -9839,7 +9839,8 @@ boot reconcile is unchanged: `handle_continue/2` runs before any `acquire/1`
 in the mailbox.
 
 **The pin.** `Grappa.Application.children/1` (`@doc false`) builds the list
-from four boot flags, which `start/2` reads once through `boot_flags/0`.
+from four boot flags, which `start/2` reads once and records in
+`:persistent_term`; `boot_flags/0` returns that record.
 `test/grappa/application_child_order_test.exs` builds the production shape,
 with every optional child on, because the test env starts neither the manager
 nor Bootstrap. It asserts holder Registry < manager < `SessionSupervisor`,
@@ -9847,7 +9848,10 @@ manager < Endpoint and manager < Bootstrap. Another test proves the running
 tree is `children(boot_flags())`, i.e. that the seam IS the tree. On OTP 28
 `which_children/1` lists children in reverse start order. That is measured,
 not documented, so the test reverses the list and says what to do if an OTP
-upgrade changes it.
+upgrade changes it. That second test must read the record, never the env:
+a re-read went red on CI under one test order (run 45533940717), because the
+async `create_user_test.exs` runs `start_app_silent/0`, which puts
+`:start_endpoint` to false on the node that is already running.
 
 ### Not the same hazard: identd
 
