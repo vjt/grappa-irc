@@ -201,6 +201,31 @@ export async function loginAs(
   await waitForUserTopicReady(page, vjt.name);
 }
 
+// #793 / issue 2703 — an invite link in its canonical spelling,
+// `/?go=<network>/<channel>`. Links are written by hand (there is no generator
+// in the product, by vjt's ruling), so this helper IS the canonical spelling,
+// and it is the shape the docs quote. The channel travels WITHOUT its `#`: a
+// literal `#` starts the fragment and the value would truncate, while the
+// parser implies the sigil. Each component is encoded on its own, so the `/`
+// separator survives.
+export function inviteUrl(networkSlug: string, channel: string): string {
+  return `/?go=${encodeURIComponent(networkSlug)}/${encodeURIComponent(channel.replace(/^#/, ""))}`;
+}
+
+// Arrive on an invite link already signed in as `user`: the `loginAs` seeding,
+// then the invite URL as the FIRST navigation, because the link is read once
+// at boot. Returns as soon as the page has loaded; what the invite then does
+// is what the spec is there to assert.
+export async function openInviteLink(
+  page: Page,
+  user: SeededUser,
+  networkSlug: string,
+  channel: string,
+): Promise<void> {
+  await seedAuthLocalStorage(page, user.token, user.subjectJson);
+  await page.goto(inviteUrl(networkSlug, channel));
+}
+
 // Admin sibling of `loginAs`: the same `seedAuthLocalStorage` seeding,
 // gated on `expectShellReady` instead of the per-network header +
 // user-topic ack above.
