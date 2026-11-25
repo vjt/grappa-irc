@@ -179,23 +179,23 @@ vi.mock("../lib/networks", () => ({
   // server-contract-violation branch that would null + log).
   // Bucket F H4: Network is now a discriminated union; the user
   // branch requires `kind: "user"` + connection_state fields.
-  networks: () => {
-    const n = userNick();
-    return [
-      {
-        kind: "user",
-        id: 42,
-        slug: "freenode",
-        nick: n ?? "alice",
-        connection_state: "connected",
-        connection_state_reason: null,
-        connection_state_changed_at: null,
-        inserted_at: "",
-        updated_at: "",
-      },
-    ];
-  },
+  networks: () => [freenodeNetwork()],
+  // issue 2719 — the INVITE row's [Join] goes through `joinChannel`, which
+  // asks the store whether the network has a session before it joins.
+  networkBySlug: (slug: string) => (slug === "freenode" ? freenodeNetwork() : undefined),
 }));
+
+const freenodeNetwork = () => ({
+  kind: "user",
+  id: 42,
+  slug: "freenode",
+  nick: userNick() ?? "alice",
+  connection_state: "connected",
+  connection_state_reason: null,
+  connection_state_changed_at: null,
+  inserted_at: "",
+  updated_at: "",
+});
 
 // #280 — ScrollbackPane now mounts NextActiveButton inside its float
 // stack (mobile). Stub the child: this suite unit-tests ScrollbackPane's
