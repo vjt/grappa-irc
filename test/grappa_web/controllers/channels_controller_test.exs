@@ -54,6 +54,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       conn =
         conn
@@ -76,6 +77,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       for name <- ["#", "&"] do
         line = "JOIN #{name}\r\n"
@@ -98,6 +100,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       conn =
         conn
@@ -247,6 +250,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       conn =
         conn
@@ -300,6 +304,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       conn =
         conn
@@ -1050,6 +1055,8 @@ defmodule GrappaWeb.ChannelsControllerTest do
       session = visitor_session_fixture(visitor)
       pid = start_visitor_session_for(visitor, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      {:ok, cred} = Credentials.representative_visitor_credential(visitor.id)
+      :ok = IRCServer.register(server, cred.nick, 1_000)
 
       conn =
         Phoenix.ConnTest.build_conn()

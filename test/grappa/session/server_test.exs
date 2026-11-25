@@ -32,7 +32,7 @@ defmodule Grappa.Session.ServerTest do
   import Grappa.{AuthFixtures, MessageEventAssertions}
   import Mox
 
-  alias Grappa.IRC.{Identifier, Message}
+  alias Grappa.IRC.{Client, Identifier, Message}
 
   alias Grappa.{
     IRCServer,
@@ -3567,7 +3567,7 @@ defmodule Grappa.Session.ServerTest do
 
     test "join_failed (473) persists + broadcasts the notice but fires NO window_counts push" do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, network, _} = setup_user_and_network(port, %{nick: "vjt"})
+      {user, network, _} = setup_user_and_network(port, %{nick: "vjt", autojoin_channels: []})
 
       :ok =
         Phoenix.PubSub.subscribe(
@@ -3577,6 +3577,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "vjt", 1_000)
       :ok = Session.send_join({:user, user.id}, network.id, "#sniffo", nil)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
@@ -6584,10 +6585,11 @@ defmodule Grappa.Session.ServerTest do
       # in_flight_joins display-value follows suit — there is no
       # mixed-case form to preserve once the boundary has folded.
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, network, _} = setup_user_and_network(port)
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: []})
       pid = start_session_for(user, network)
 
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
       :ok = Session.send_join({:user, user.id}, network.id, "#Sniffo", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
@@ -6611,13 +6613,14 @@ defmodule Grappa.Session.ServerTest do
       # machine. User-topic (NOT per-channel) — chicken-and-egg: cic
       # only joins per-channel after seeing :pending.
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, network, _} = setup_user_and_network(port)
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: []})
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
 
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
       :ok = Session.send_join({:user, user.id}, network.id, "#Sniffo", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
@@ -6648,12 +6651,13 @@ defmodule Grappa.Session.ServerTest do
       # :pending PER channel, and broadcasts window_pending PER channel on
       # the user-topic so BOTH sidebar rows appear.
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, network, _} = setup_user_and_network(port)
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: []})
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       :ok = Session.send_join({:user, user.id}, network.id, "#alfa,#beta", nil)
 
@@ -6687,10 +6691,11 @@ defmodule Grappa.Session.ServerTest do
       # in_flight_joins / window_state KEYS are network-folded (ASCII here →
       # `#alfa`/`#beta`), so cic still sees one canonical key per channel.
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, network, _} = setup_user_and_network(port)
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: []})
 
       pid = start_session_for(user, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       :ok = Session.send_join({:user, user.id}, network.id, "#Alfa,#BETA", nil)
 
@@ -6877,12 +6882,13 @@ defmodule Grappa.Session.ServerTest do
       # re-broadcast). The JOIN echo resolves :pending → :joined / :failed;
       # the invite is moot while a join is already in flight.
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, network, _} = setup_user_and_network(port)
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: []})
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       # Operator initiates a JOIN → window goes :pending.
       :ok = Session.send_join({:user, user.id}, network.id, "#pendingchan", nil)
@@ -7002,10 +7008,11 @@ defmodule Grappa.Session.ServerTest do
       # broadcasting it would also carry a different `kind:` than the
       # user-topic origin). Documented design choice — verified here.
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, network, _} = setup_user_and_network(port)
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: []})
       pid = start_session_for(user, network)
 
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
       :ok = Session.send_join({:user, user.id}, network.id, "#sniffo", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
@@ -7032,13 +7039,14 @@ defmodule Grappa.Session.ServerTest do
       # broadcast keeps cic stable while preserving server-side
       # tracking.
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, network, _} = setup_user_and_network(port)
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: []})
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
 
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
       :ok = Session.send_join({:user, user.id}, network.id, "#sniffo", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
@@ -7134,13 +7142,14 @@ defmodule Grappa.Session.ServerTest do
       # per-channel topic. Subscribe to BOTH topics so we can assert each
       # path lands in one cycle for cic to render the failure correctly.
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, network, _} = setup_user_and_network(port)
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: []})
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
 
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
       :ok = Session.send_join({:user, user.id}, network.id, "#sniffo", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
@@ -7210,13 +7219,14 @@ defmodule Grappa.Session.ServerTest do
       # event the pseudo-row would vanish but the archive section
       # would stay empty until manual archive-section toggle.
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, network, _} = setup_user_and_network(port)
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: []})
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
 
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
       :ok = Session.send_join({:user, user.id}, network.id, "#sniffo-bk", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
@@ -7278,13 +7288,14 @@ defmodule Grappa.Session.ServerTest do
       # the JOIN produced no effect at all: the window sat at `:pending`
       # forever and cic drew a greyed tab that never resolved.
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, network, _} = setup_user_and_network(port)
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: []})
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
 
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
       :ok = Session.send_join({:user, user.id}, network.id, "#registrati", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
@@ -7369,10 +7380,11 @@ defmodule Grappa.Session.ServerTest do
       # now. Avoids Process.sleep(31_000) (too slow) and avoids injecting
       # a clock fn (overkill — we control what's seeded).
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, network, _} = setup_user_and_network(port)
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: []})
       pid = start_session_for(user, network)
 
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       stale_at = System.monotonic_time(:millisecond) - 60_000
 
@@ -7398,10 +7410,11 @@ defmodule Grappa.Session.ServerTest do
       # its in-flight tracker prematurely and a real failure numeric
       # afterwards would fall through unannotated.
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, network, _} = setup_user_and_network(port)
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: []})
       pid = start_session_for(user, network)
 
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       recent_at = System.monotonic_time(:millisecond) - 5_000
 
@@ -16770,8 +16783,11 @@ defmodule Grappa.Session.ServerTest do
     # nothing ever put them back on the wire.
     #
     # `client: nil` is the seam #1390's dropped-RecoverIdentity test already
-    # uses (`Client.send_line/2`'s nil clause → `{:error, :no_socket}`): the
-    # door's transport-error branch without the socket-teardown dance.
+    # uses (`Client.send_line/2`'s nil clause → `{:error, :no_socket}`).
+    # Issue 2703: `registered_at: nil` goes with it, because that window is a
+    # FRESH process (the Client's EXIT stops the old one), and a fresh process
+    # has had no 001. The door holds a JOIN on that fact; a registered
+    # session with no Client is a state nothing produces any more.
     #
     # The second 001 is not a test contrivance — `maybe_autojoin_or_defer/1`
     # carries no once-only latch and the numeric-1 handler documents the
@@ -16798,7 +16814,7 @@ defmodule Grappa.Session.ServerTest do
       pid: pid
     } do
       client = SessionStateHelpers.client(SessionStateHelpers.fetch(pid))
-      _ = :sys.replace_state(pid, fn state -> %{state | client: nil} end)
+      _ = :sys.replace_state(pid, &backoff_window/1)
 
       # The return value is deliberately ignored here: this test is about the
       # WIRE, not the door's reply. The door contract has its own test below,
@@ -16823,7 +16839,7 @@ defmodule Grappa.Session.ServerTest do
       # frames every channel keyless (keys are never persisted), so a deferred
       # JOIN that loses its key rejoins a +k channel straight into a 475.
       client = SessionStateHelpers.client(SessionStateHelpers.fetch(pid))
-      _ = :sys.replace_state(pid, fn state -> %{state | client: nil} end)
+      _ = :sys.replace_state(pid, &backoff_window/1)
 
       _ = Session.send_join({:user, user.id}, network.id, "#locked", "s3cret")
 
@@ -16867,7 +16883,7 @@ defmodule Grappa.Session.ServerTest do
       # actually holds — and `window_pending` is the origination edge cic
       # subscribes per-channel off, so the queued window is reachable.
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
-      _ = :sys.replace_state(pid, fn state -> %{state | client: nil} end)
+      _ = :sys.replace_state(pid, &backoff_window/1)
 
       assert :ok = Session.send_join({:user, user.id}, network.id, "#refused", nil)
 
@@ -16879,5 +16895,167 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
+  end
+
+  describe "issue 2703 — a JOIN that arrives before 001 waits for 001" do
+    # Issue 2114 closed half of this window: a JOIN that finds no socket is
+    # queued and fired at 001. The other half is the socket that is up but not
+    # registered yet. A fresh spawn starts its Client at once
+    # (`Backoff.wait_ms/2` is 0 after the reset), the Client writes every line
+    # as soon as its socket exists, and an ircd answers a JOIN from an
+    # unregistered client with 451. Nothing here handles 451, so the window
+    # that `record_in_flight_join/2` opened stayed `:pending` for good. An
+    # invite link that connects a network and then joins one of its channels
+    # lands in exactly that window.
+    #
+    # `passthrough_handler/0` never answers USER, so the session sits there,
+    # socket up and 001 not yet received, until a test feeds the 001 itself.
+
+    setup do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#control"]})
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      %{server: server, user: user, network: network, pid: pid}
+    end
+
+    test "a JOIN sent before 001 reaches the wire only after it", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      assert :ok = Session.send_join({:user, user.id}, network.id, "#early", nil)
+      assert :ok = Session.send_join({:user, user.id}, network.id, "#locked", "s3cret")
+
+      wire_barrier(server, pid, "before-001")
+
+      refute Enum.any?(IRCServer.sent_lines(server), &String.starts_with?(&1, "JOIN ")),
+             "a JOIN went on the wire before 001: the ircd answers it with 451"
+
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      assert await_sent_line_count(server, &(&1 == "JOIN #control\r\n"), 1, 2_000) == :ok,
+             "instrument broken: the 001 never reached the join plan"
+
+      assert await_sent_line_count(server, &(&1 == "JOIN #early\r\n"), 1, 2_000) == :ok,
+             "a JOIN held back before 001 was never sent"
+
+      assert await_sent_line_count(server, &(&1 == "JOIN #locked s3cret\r\n"), 1, 2_000) == :ok,
+             "the held JOIN lost its +k key"
+
+      wire_barrier(server, pid, "after-001")
+      lines = IRCServer.sent_lines(server)
+      assert Enum.count(lines, &(&1 == "JOIN #early\r\n")) == 1
+      assert Enum.count(lines, &(&1 == "JOIN #locked s3cret\r\n")) == 1
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "the door accepts a JOIN before 001 and opens its window :pending", %{
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      # 202 plus `window_pending` is what the session now holds: a JOIN it will
+      # send. `window_pending` is also the edge cic subscribes per-channel off.
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      assert :ok = Session.send_join({:user, user.id}, network.id, "#early", nil)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :window_pending, channel: "#early"}
+                     },
+                     1_000
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "after 001 a JOIN goes straight to the wire", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      # CONTROL: the hold is for the registration window only. A queue that
+      # held every JOIN until the next 001 would pass the test above and leave
+      # every /join on a registered session waiting for a reconnect.
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #control\r\n"), 1_000)
+
+      assert :ok = Session.send_join({:user, user.id}, network.id, "#late", nil)
+
+      assert await_sent_line_count(server, &(&1 == "JOIN #late\r\n"), 1, 2_000) == :ok,
+             "a JOIN on a registered session did not go straight out"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "a multi-target JOIN past 512 bytes is refused before 001, as after it", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      # The held JOINs go out one per line at 001, so a list the wire would
+      # refuse as ONE line could slip through as twelve. The door must give the
+      # same answer whichever side of the 001 it is asked on.
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      long_list =
+        Enum.map_join(1..12, ",", fn i -> "#" <> String.duplicate("x", 45) <> "#{100 + i}" end)
+
+      assert {:error, :invalid_line} =
+               Session.send_join({:user, user.id}, network.id, long_list, nil)
+
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :window_pending}}, 100
+
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #control\r\n"), 1_000)
+      wire_barrier(server, pid, "after-001")
+
+      assert Enum.filter(IRCServer.sent_lines(server), &String.starts_with?(&1, "JOIN ")) == [
+               "JOIN #control\r\n"
+             ]
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "a process with no registered_at key sends its JOIN directly", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      # A session hot-loaded from before issue 2097 has no `registered_at` key
+      # at all. It registered long ago, so reading the absent key as "not yet"
+      # would hold every JOIN it is sent until a 001 that already happened.
+      _ = :sys.replace_state(pid, &Map.delete(&1, :registered_at))
+
+      assert :ok = Session.send_join({:user, user.id}, network.id, "#legacy", nil)
+
+      assert await_sent_line_count(server, &(&1 == "JOIN #legacy\r\n"), 1, 2_000) == :ok,
+             "a session without the 2097 stamp held its JOIN"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
+  # issue 2114 — the state a session is in while the reconnect ladder defers
+  # its Client: a fresh process, so no Client yet and no 001 yet.
+  defp backoff_window(state), do: %{state | client: nil, registered_at: nil}
+
+  # issue 2703 — a line written straight through the session's Client, then
+  # waited for on the fake. The socket is one TCP stream, so once the fake has
+  # this line it already has every line written before it: a `refute` read
+  # after the barrier is a measurement, not a race.
+  defp wire_barrier(server, pid, tag) do
+    client = SessionStateHelpers.client(SessionStateHelpers.fetch(pid))
+    line = "PING :w2703-#{tag}\r\n"
+    :ok = Client.send_line(client, line)
+    {:ok, _} = IRCServer.wait_for_line(server, &(&1 == line), 1_000)
+    :ok
   end
 end
