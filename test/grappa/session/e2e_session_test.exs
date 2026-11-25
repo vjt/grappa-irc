@@ -1486,8 +1486,8 @@ defmodule Grappa.Session.E2eSessionTest do
       on_exit(fn -> Backoff.reset(subject, network.id) end)
       pid = start_session!(user, network)
 
-      # The precondition: whatever needs the socket is refused right now.
-      assert {:error, :no_socket} = Session.send_privmsg(subject, network.id, "#test", "lost")
+      # The precondition: whatever needs the link is refused right now.
+      assert {:error, :not_registered} = Session.send_privmsg(subject, network.id, "#test", "lost")
 
       # A copy never goes on IRC, so it does not wait for the link.
       assert {:ok, %E2eInbox.Entry{id: id}} =
@@ -1605,6 +1605,18 @@ defmodule Grappa.Session.E2eSessionTest do
 
       assert [%Request{peer: "alice"}] = E2eRequests.list({:user, user.id}, network.id, DateTime.utc_now())
       assert E2eInbox.list(device, 0) == []
+      assert Process.alive?(pid)
+    end
+
+    test "asking before the network registered us is refused and keeps no request" do
+      {server, pid, user, network} = unregistered_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+
+      assert {:error, :not_registered} = Session.ask_e2e(subject, network.id, "Alice", device.did, @hint)
+
+      assert E2eRequests.list(subject, network.id, DateTime.utc_now()) == []
+      refute Enum.any?(IRCServer.sent_lines(server), &String.starts_with?(&1, "PRIVMSG Alice"))
       assert Process.alive?(pid)
     end
 
@@ -2323,8 +2335,14 @@ defmodule Grappa.Session.E2eSessionTest do
 
   # The same with `devices` listed devices; with none, the subject has no
   # E2E identity on the network at all.
-  defp connected_session(devices) do
-    {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", @nick))
+  defp connected_session(devices), do: session_on(IRCServer.welcome_handler(":irc", @nick), devices)
+
+  # The same, on a fake ircd that never sends 001: the socket is up and the
+  # network has not registered us (issue 2728).
+  defp unregistered_session, do: session_on(IRCServer.passthrough_handler(), 1)
+
+  defp session_on(handler, devices) do
+    {server, port} = IRCServer.start_server(handler)
 
     user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
 

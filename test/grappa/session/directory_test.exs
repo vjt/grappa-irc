@@ -39,6 +39,7 @@ defmodule Grappa.Session.DirectoryTest do
 
     _ = start_session_for(user, network)
     :ok = IRCServer.await_handshake(server, 1_000)
+    :ok = IRCServer.welcome(server, 1_000)
 
     assert :ok = Session.refresh_directory({:user, user.id}, network.id)
 
@@ -67,6 +68,7 @@ defmodule Grappa.Session.DirectoryTest do
     end)
 
     :ok = IRCServer.await_handshake(server, 1_000)
+    :ok = IRCServer.welcome(server, 1_000)
     :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
     assert :ok = Session.refresh_directory({:user, user.id}, network.id)
@@ -103,6 +105,7 @@ defmodule Grappa.Session.DirectoryTest do
     end)
 
     :ok = IRCServer.await_handshake(server, 1_000)
+    :ok = IRCServer.welcome(server, 1_000)
 
     # Subscribe BEFORE triggering so the (50ms-out) failed ping can't race
     # the subscribe. `subject_label` for a user session is `user.name`.
@@ -144,6 +147,7 @@ defmodule Grappa.Session.DirectoryTest do
     end)
 
     :ok = IRCServer.await_handshake(server, 1_000)
+    :ok = IRCServer.welcome(server, 1_000)
     :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
     :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.channel(user.name, network.slug, "$server"))
 
@@ -176,6 +180,7 @@ defmodule Grappa.Session.DirectoryTest do
 
     _ = start_session_for(user, network)
     :ok = IRCServer.await_handshake(server, 1_000)
+    :ok = IRCServer.welcome(server, 1_000)
 
     # Subscribe before triggering so the `directory_complete` ping can't race
     # the subscribe. The broadcast (323 processed) is the sync point — once it
@@ -235,6 +240,7 @@ defmodule Grappa.Session.DirectoryTest do
     end)
 
     :ok = IRCServer.await_handshake(server, 1_000)
+    :ok = IRCServer.welcome(server, 1_000)
     :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
     # A first, complete capture: this is the snapshot that must survive.
@@ -290,6 +296,7 @@ defmodule Grappa.Session.DirectoryTest do
     end)
 
     :ok = IRCServer.await_handshake(server, 1_000)
+    :ok = IRCServer.welcome(server, 1_000)
     :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
     assert :ok = Session.refresh_directory({:user, user.id}, network.id)

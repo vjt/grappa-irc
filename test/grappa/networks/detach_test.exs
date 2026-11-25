@@ -150,6 +150,7 @@ defmodule Grappa.Networks.DetachTest do
 
       pid = start_session_for(user, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.welcome(server, 1_000)
       ref = Process.monitor(pid)
 
       assert {:ok, detached} = Networks.detach(cred, "detaching network")

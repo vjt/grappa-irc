@@ -35,6 +35,8 @@ defmodule GrappaWeb.MessagesControllerOwnSendCursorTest do
     _ = credential_fixture(vjt, network, %{nick: @own_nick, autojoin_channels: []})
     _ = start_session_for(vjt, network)
     :ok = IRCServer.await_handshake(server, 1_000)
+    # Issue 2728: a PRIVMSG before 001 is refused, so the session registers.
+    :ok = IRCServer.register(server, @own_nick, 1_000)
 
     # The advance runs in a detached task; keep a straggler off the sandbox
     # owner's teardown (on_exit is LIFO — this runs before ConnCase's).

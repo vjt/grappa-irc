@@ -674,11 +674,15 @@ defmodule Grappa.Operator do
   # `Identifier.safe_line_token?/1`, the bare match crashes loudly and
   # the operator sees "fix the reason constant" rather than a silent
   # swallow. The `:no_session` branch IS reachable (no live pid is the
-  # happy case for a hard terminate).
+  # happy case for a hard terminate), and so is `:not_registered` (issue
+  # 2728): a session the network has not registered yet has no upstream
+  # presence to QUIT, and the stop that follows closes its socket. Before
+  # 2728 the no-Client half of that answered `:no_socket` and crashed here.
   defp best_effort_quit(subject, network_id) do
     case Session.send_quit(subject, network_id, @terminate_reason) do
       :ok -> :ok
       {:error, :no_session} -> :ok
+      {:error, :not_registered} -> :ok
     end
   end
 

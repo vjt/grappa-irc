@@ -54,9 +54,11 @@ defmodule GrappaWeb.E2eControllerTest do
 
   # A live session for vjt on a fresh network, and vjt's E2E identity
   # there: one device, registered and listed. Every send names it as
-  # `from`.
+  # `from`. The network has registered the session (001): a send before it
+  # is refused `not_registered` (issue 2728).
   defp live_network(vjt) do
     {server, network, [device]} = live_network(vjt, 1, IRCServer.passthrough_handler())
+    :ok = IRCServer.register(server, "grappa-test", 1_000)
     {server, network, device}
   end
 

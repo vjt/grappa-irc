@@ -409,6 +409,7 @@ defmodule GrappaWeb.SessionControllerTest do
 
       pid = start_session_for(user, network)
       :ok = IRCServer.await_handshake(server, 5_000)
+      :ok = IRCServer.welcome(server, 5_000)
       ref = Process.monitor(pid)
 
       conn
