@@ -226,7 +226,9 @@ defmodule Grappa.IRCServer do
 
   Issue 2703: the session holds a JOIN that arrives before 001 and sends it
   at 001, as an ircd would refuse it with 451. A test that wants its JOIN on
-  the wire therefore registers first. `nick` and `timeout` carry no default,
+  the wire therefore registers first. Issue 2721: a PART before 001 is not
+  sent at all (there is no upstream channel to leave yet), so the same goes
+  for a test that wants its PART on the wire. `nick` and `timeout` carry no default,
   for the reason `welcome_handler/2` and `await_handshake/2` give.
   """
   @spec register(pid(), binary(), pos_integer()) :: :ok

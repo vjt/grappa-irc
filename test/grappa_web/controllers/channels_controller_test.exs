@@ -344,6 +344,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       conn = delete(conn, "/networks/#{network.slug}/channels/%23sniffo")
 
@@ -406,6 +407,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       conn =
         delete(
@@ -428,6 +430,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       conn = delete(conn, "/networks/#{network.slug}/channels/%23sniffo?reason=")
 
@@ -459,6 +462,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
 
       pid = start_session_for(vjt, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       conn = delete(conn, "/networks/#{network.slug}/channels/%23sniffo")
 
@@ -486,6 +490,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
 
       pid = start_session_for(vjt, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       conn = delete(conn, "/networks/#{network.slug}/channels/%23sniffo?reason=explicit")
 
@@ -517,6 +522,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
 
       pid = start_session_for(vjt, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       conn = delete(conn, "/networks/#{network.slug}/channels/%23sniffo?reason=")
 
@@ -678,6 +684,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
 
       pid = start_session_for(vjt, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       # Seed window_state[#unjoined] = :failed (e.g. prior +i JOIN rejection)
       # so the eager wipe has something to clear. Without this seed the
@@ -725,6 +732,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
 
       pid = start_session_for(vjt, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       # Seed state.members[#chan] + window_state[#chan]=:joined to mirror a
       # post-JOIN session. The eager-wipe path must clean both even though
@@ -769,6 +777,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       _ = credential_fixture(vjt, network, %{autojoin_channels: []})
       pid = start_session_for(vjt, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
 
       # Seed two live-joined channels synchronously; last_joined starts empty.
       :sys.replace_state(pid, fn s ->
@@ -1079,6 +1088,8 @@ defmodule GrappaWeb.ChannelsControllerTest do
       session = visitor_session_fixture(visitor)
       pid = start_visitor_session_for(visitor, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      {:ok, cred} = Credentials.representative_visitor_credential(visitor.id)
+      :ok = IRCServer.register(server, cred.nick, 1_000)
 
       conn =
         Phoenix.ConnTest.build_conn()
@@ -1127,6 +1138,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
 
       # Seed live membership synchronously (dodges the self-JOIN echo race).
       {:ok, cred} = Grappa.Networks.Credentials.get_visitor_credential(visitor.id, network.id)
+      :ok = IRCServer.register(server, cred.nick, 1_000)
 
       :sys.replace_state(pid, fn s ->
         %{s | members: Map.put(s.members, "#italia", %{cred.nick => []})}
@@ -1170,6 +1182,8 @@ defmodule GrappaWeb.ChannelsControllerTest do
       session = visitor_session_fixture(visitor)
       pid = start_visitor_session_for(visitor, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      {:ok, cred} = Credentials.representative_visitor_credential(visitor.id)
+      :ok = IRCServer.register(server, cred.nick, 1_000)
 
       conn =
         Phoenix.ConnTest.build_conn()

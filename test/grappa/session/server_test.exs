@@ -17175,9 +17175,9 @@ defmodule Grappa.Session.ServerTest do
       assert :ok = Session.send_join({:user, user.id}, network.id, "#gone", nil)
       assert :ok = Session.send_part({:user, user.id}, network.id, "#gone", nil)
 
-      # The cast writes its PART line last, so a PART on the fake means the
-      # whole cast ran.
-      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PART #gone\r\n"), 1_000)
+      # Before 001 the PART stays off the wire (issue 2721), so the barrier is
+      # the mailbox: this call is answered after the cast has run.
+      _ = :sys.get_state(pid)
 
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
@@ -17284,6 +17284,25 @@ defmodule Grappa.Session.ServerTest do
 
       refute "#control" in cred.last_joined_channels,
              "the echo of a JOIN the PART cancelled was persisted for the next boot"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "a PART before 001 does not reach the wire", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      # Before 001 we are in no upstream channel, so there is nothing for a
+      # PART to leave, and an ircd answers any command from an unregistered
+      # client with 451. The local cleanup is the whole of the PART here.
+      assert :ok = Session.send_part({:user, user.id}, network.id, "#control", nil)
+      _ = :sys.get_state(pid)
+      wire_barrier(server, pid, "w2721-before-001")
+
+      refute "PART #control\r\n" in IRCServer.sent_lines(server),
+             "a PART went on the wire before 001, where it can only earn a 451"
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

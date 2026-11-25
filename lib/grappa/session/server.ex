@@ -3415,28 +3415,37 @@ defmodule Grappa.Session.Server do
     # not even have moved the keyset), so the channel travels as `departed`.
     maybe_persist_last_joined(prev, state, [key])
 
-    case Client.send_part(state.client, channel, reason) do
-      :ok ->
-        {:noreply, state}
+    # Issue 2721 — before 001 we are in no upstream channel, so there is
+    # nothing for a PART to leave: the local cleanup above IS the whole PART,
+    # and the line would only earn a 451 from an ircd that has not registered
+    # us yet. The same `registration_pending?/1` gate that holds a JOIN.
+    if registration_pending?(state) do
+      Logger.info("PART not sent upstream: registration still pending", channel: inspect(channel))
+      {:noreply, state}
+    else
+      case Client.send_part(state.client, channel, reason) do
+        :ok ->
+          {:noreply, state}
 
-      {:error, :invalid_line} ->
-        Logger.warning("send_part cast rejected: invalid channel name", channel: inspect(channel))
-        {:noreply, state}
+        {:error, :invalid_line} ->
+          Logger.warning("send_part cast rejected: invalid channel name", channel: inspect(channel))
+          {:noreply, state}
 
-      # Transport-level failure (no socket, closed, etc.). Local
-      # cleanup already ran above (PartCleanup.cleanup_local +
-      # broadcast_channels_changed); the upstream PART wire frame is
-      # the best-effort echo that doesn't gate the operator's intent.
-      # Log + swallow so a mid-reconnect /part doesn't crash the
-      # Session.Server (it would respawn cleanly but the cast caller
-      # has no way to surface a tagged error anyway).
-      {:error, reason} ->
-        Logger.warning("send_part cast rejected: transport unavailable",
-          channel: inspect(channel),
-          reason: inspect(reason)
-        )
+        # Transport-level failure (no socket, closed, etc.). Local
+        # cleanup already ran above (PartCleanup.cleanup_local +
+        # broadcast_channels_changed); the upstream PART wire frame is
+        # the best-effort echo that doesn't gate the operator's intent.
+        # Log + swallow so a mid-reconnect /part doesn't crash the
+        # Session.Server (it would respawn cleanly but the cast caller
+        # has no way to surface a tagged error anyway).
+        {:error, reason} ->
+          Logger.warning("send_part cast rejected: transport unavailable",
+            channel: inspect(channel),
+            reason: inspect(reason)
+          )
 
-        {:noreply, state}
+          {:noreply, state}
+      end
     end
   end
 
