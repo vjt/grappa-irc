@@ -173,8 +173,11 @@ export const dismissInviteToast = queue.dismiss;
 /**
  * The toast's sentence. It sits beside the producer rather than inline in
  * Toasts.tsx so that a new `reason` fails tsc right here (`assertNever`), and
- * so that the tests and the e2e can match the production copy instead of a
- * retyped string.
+ * so that the unit tests can match the production copy instead of a retyped
+ * string. The e2e cannot import it (a Playwright spec imports only types from
+ * `src`, and this module pulls in solid and the stores), so the #793 spec pins
+ * the "unavailable" sentence as a literal, on purpose: a copy change shows up
+ * there as a red.
  */
 export function inviteToastText(toast: InviteToast): string {
   switch (toast.reason) {
