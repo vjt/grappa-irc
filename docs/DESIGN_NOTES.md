@@ -9182,25 +9182,71 @@ default.
   `the_message_kinds_are_the_servers` pins the table to
   `SCROLLBACK_MESSAGE_KIND` in `wireTypes.ts`, value for value and in order.
   Order matters twice, because the index is the `MSG_*` value.
+* Each pinned table (the message kinds and the five E2E sets) puts every name
+  at its enumerator with a designated initialiser, `[MSG_JOIN] = "join"`, and
+  `CLOSED_SET` takes the enum's last enumerator and asserts that the table
+  ends there. Nothing used to tie the `wire.h` enum to its table: the pin
+  compares the table with `wireTypes.ts`, and `-Wswitch` ties a new
+  enumerator to the switches. So the cheapest edit that turns a red pin
+  green, a name appended to the table and to the server's list with no
+  enumerator, left CI green while the new kind narrowed to a value outside
+  the enum; and a name inserted mid-table, with its enumerator appended at
+  the end, had every kind after it misread. Both were measured all-green in
+  cross-review. A designated table can have a hole, an enumerator inserted
+  mid-enum with no name: it reads "unknown" rather than NULL, so the pin
+  names it instead of crashing.
 * `wire_message_kind_is_content()` replaces the five inline predicates.
 * That function and the three switches name every kind, with no `default:`.
   `-Wswitch` is in `-Wall`, and CI's shottino build step compiles with
   `-Wall -Werror`, so a new `MSG_*` fails CI at five named sites without
   any build-file change. The shipped Makefile keeps it a warning, as its
   comment wants for users on newer compilers.
+* `ircd_message_line` clears its output before its switch. Its three callers
+  send the line only when it is non-empty, and a kind with no arm used to
+  leave their uninitialised stack buffer to be sent to every bridged IRC
+  client. That was there before this issue. The assert keeps such a kind off
+  the wire, but a tree that adds a `MSG_*` without its arm still builds under
+  the shipped Makefile, where `-Wswitch` is only a warning.
 
 ### Measured
 
 In one gcc 14.4 container (aarch64) over `git archive` trees, with the
-predictions written first:
+predictions written first, before the binding:
 
 * `"whisper"` appended to `SCROLLBACK_MESSAGE_KIND`: `test_commands` fails 2
   of 776 checks, both in the new test. The same mutant on the base
   (`4c60ff8a7`) passes 760 of 760.
-* `MSG_WHISPER` added on the C side only: `test_commands` fails 1 of 775
-  (count 12 against the server's 11), and gcc warns at the same five sites
-  host clang found. CI's exact build step exits 2 with five
-  `-Werror=switch` errors at those sites, and exits 0 on the clean tree.
+* `MSG_WHISPER` added to the enum AND to the name table, `wireTypes.ts`
+  untouched: `test_commands` fails 1 of 775 (count 12 against the server's
+  11). The count is the table's length, so it is the table entry that the pin
+  saw. gcc warns at the same five sites host clang found. CI's exact build
+  step exits 2 with five `-Werror=switch` errors at those sites, and exits 0
+  on the clean tree. An enum-only `MSG_WHISPER` leaves the pin green: the
+  switches are what name it.
+
+After the binding, on host gcc 14.2 (aarch64), again over `git archive` trees
+with the predictions written first. There is no cargo on that host, so the
+suites that compile `shottino.c` were linked against a no-op vodozemac stub.
+The three E2E suites, and `test_layout` (no ffmpeg), fail there identically
+on the base; the other 20 of 24 pass on both.
+
+* CI's compile of the 16 objects: rc=0, 0 diagnostics. `test_commands` passes
+  775, `test_ircd` 247 (the base 246, plus the new line test), `test_windows`
+  2210 and `test_wire` 732.
+* A name appended to any of the six tables without its enumerator, with or
+  without the server's list: the build fails at that table's assert. A
+  designated `[MSG_WHISPER]` with no enumerator: `MSG_WHISPER` is undeclared.
+* An enum-only `MSG_WHISPER`: the pin passes, and CI's flags fail at five
+  `-Werror=switch` sites, once in `wire.c` and four times in `shottino.c`.
+* `MSG_WHISPER` designated and classified, with `"whisper"` inserted at index
+  3 of `SCROLLBACK_MESSAGE_KIND`: the pin fails 9 checks, one per kind from
+  index 3 on. The same name written positionally into the middle of the
+  designated table: `-Werror=override-init` plus the assert.
+* An E2E enumerator inserted mid-enum with no name: the pin fails 3 checks,
+  `"unknown"` at the hole. With `name_in`'s NULL guard removed, the pin
+  crashes in `strcmp` under ASan instead.
+* Without the new clear in `ircd_message_line`, `test_ircd` fails 1 of 247:
+  the new test.
 
 ### Considered, not taken
 
@@ -9211,12 +9257,21 @@ predictions written first:
   translation units on day one, among them `wire.c`'s `wire_kind` switch,
   which is missing 66 enumerators. That makes it a policy for all of
   shottino, not part of this issue.
+* **One X-macro list that generates both the enum and its table.** It would
+  remove the enum-to-table link instead of checking it, and with it the
+  appended-enumerator gap below, but it turns six enum declarations into
+  macro calls. The ruling took the check: designated tables and the assert,
+  which close the two holes measured in cross-review.
 
 ### Not in this slice
 
 * `wire_message_kind_is_content()` mirrors the server's content kinds, and
   nothing pins that classification to `@kind_class`. The pin covers the set
   of kinds, not how they are sorted.
+* An enumerator APPENDED with no name passes both the assert and the pin: the
+  table is then only shorter than the enum, and that value reads "unknown"
+  and narrows from nothing. For a `MSG_*`, `-Wswitch` names it. For the five
+  E2E sets nothing does, and such a value cannot come off the wire.
 * Window states are not a wire closed set in shottino: `enum window_state`
   is derived from user-topic events, so a new server state arrives as a new
   event kind. For window states, the issue's "fails shottino's parity test"
@@ -9224,4 +9279,4 @@ predictions written first:
 * Seen, not touched: because the CI override drops the Makefile's
   `WARNINGS` and `HARDENING`, CI never compiles shottino with `-Wformat=2`
   or the hardening flags. Host clang over `shottino.c` and `wire.c` reports
-  nothing under `-Wformat=2` today; gcc was not measured.
+  nothing under `-Wformat=2` today, and neither does host gcc 14.2.
