@@ -691,10 +691,6 @@ defmodule Grappa.Application do
     }
   end
 
-  # Bootstrap is opt-in via the `:start_bootstrap` flag (true in dev/prod,
-  # false in test) so the test suite doesn't try to spawn live IRC sessions
-  # against the operator's bound DB credentials when running `mix test`.
-  @spec bootstrap_child(boolean()) :: [] | [Grappa.Bootstrap]
   # issue 227 — the RFC 1413 ident server, DISABLED BY DEFAULT: an unset
   # `:identd` keyspace returns `[]` here and the tree is byte-identical to
   # what it was. The port is the operator's, and its default is high and
@@ -725,6 +721,10 @@ defmodule Grappa.Application do
     end
   end
 
+  # Bootstrap is opt-in via the `:start_bootstrap` flag (true in dev/prod,
+  # false in test) so the test suite doesn't try to spawn live IRC sessions
+  # against the operator's bound DB credentials when running `mix test`.
+  @spec bootstrap_child(boolean()) :: [] | [Grappa.Bootstrap]
   defp bootstrap_child(start_bootstrap) do
     if start_bootstrap do
       [Grappa.Bootstrap]
