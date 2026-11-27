@@ -542,15 +542,15 @@ describe("parseSlash — /msg", () => {
   // WHY (/msg addresses nicks), and WHAT to type instead (open/join the
   // channel window). Pin that actionable guidance so it can never regress to
   // the bare "not supported" string.
-  // issue 2179 — `+#chan` is in this list on purpose, and it is the ONE shape
-  // the ops-only cure does NOT reach. `@#chan` and `%#chan` open with a
-  // MEMBERSHIP sigil and pass this guard, so compose peels them with the
-  // network's `PREFIX=`; `+#chan` opens with a CHANTYPE and is refused here,
-  // before compose sees anything to peel. Telling the two apart needs a
-  // per-network fact this pure function deliberately does not have, on a
-  // target genuinely ambiguous with a legal channel name. Declared gap, not a
-  // regression: refused before 2179, refused after.
-  it.each(["#foo", "&local", "!12345chan", "+modeless", "+#chan"])(
+  // issue 2179 — `@#chan` and `%#chan` open with a MEMBERSHIP sigil and pass
+  // this guard, so compose peels them with the network's `PREFIX=`.
+  // issue 2227 — `+#chan` USED to be in this list: it opens with a CHANTYPE,
+  // and the guard was total on byte 0, so the one STATUSMSG level this network
+  // advertises alongside `@` was eaten before compose could peel it. The guard
+  // now refuses the target when it IS a channel and lets a `+` run in front of
+  // a channel through; `+modeless` — a channel with nothing behind the sigil —
+  // stays refused. See the block below for the two cases and the control.
+  it.each(["#foo", "&local", "!12345chan", "+modeless", "!#chan"])(
     "/msg to a channel (%s) is rejected with explicit guidance (#12/#343)",
     (chan) => {
       const r = parsePlain(`/msg ${chan} hello`);
@@ -563,6 +563,37 @@ describe("parseSlash — /msg", () => {
       expect(message).toContain(chan);
     },
   );
+
+  // issue 2227 — `+` is both an RFC channel sigil and the voice membership
+  // sigil, so the refusal backtracks instead of testing byte 0. The pair below
+  // is the whole point: one byte apart, opposite outcomes, and `@#chan` is the
+  // control that must keep behaving as it did under 2179.
+  it("/msg +#grappa is a STATUSMSG target, not a channel: it parses as a msg (#2227)", () => {
+    // Compose.ts peels this with the network's `PREFIX=` and sends it as
+    // `kind: "statusmsg"` into the `#grappa` window (#2179). The parser's job
+    // is only to stop eating it.
+    expect(parsePlain("/msg +#grappa hello")).toEqual({
+      kind: "msg",
+      target: "+#grappa",
+      body: "hello",
+    });
+  });
+
+  it("/msg +grappa is a MODELESS CHANNEL and stays refused (#2227)", () => {
+    // Nothing behind the sigil: no channel to peel to, so this is a channel
+    // addressed by name — the #12 phantom-window defect, still refused.
+    const r = parsePlain("/msg +grappa hello");
+    expect(r).toMatchObject({ kind: "error", verb: "msg" });
+    expect((r as { message: string }).message).toContain("+grappa");
+  });
+
+  it("/msg @#grappa is the control: unchanged by #2227", () => {
+    expect(parsePlain("/msg @#grappa hello")).toEqual({
+      kind: "msg",
+      target: "@#grappa",
+      body: "hello",
+    });
+  });
 });
 
 // issue 2430 — /equery <nick>: the target as typed; bare is `null`, which

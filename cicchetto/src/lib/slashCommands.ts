@@ -1,5 +1,5 @@
 import { atKey, type ByKey, keyEntries, keysOf, setKey } from "./byKey";
-import { isChannelName } from "./chantypes";
+import { DEFAULT_CHANTYPES, isChannelName } from "./chantypes";
 import {
   DEFAULT_NOTIFICATION_SOUND,
   isNotificationSound,
@@ -543,6 +543,52 @@ function parseNetworkReason(kind: NetworkReasonKind, rest: string): SlashCommand
 // that does not care about sigils simply declares two parameters.
 type Handler = (verb: string, rest: string, chantypes: readonly string[]) => SlashCommand;
 
+// #2227 — the `/msg` channel-target refusal is about the target BEING a
+// channel, not about its first byte, because `+` is BOTH an RFC channel sigil
+// and the voice membership sigil. Total on byte 0, it ate the one STATUSMSG
+// level this network advertises alongside `@`: `/msg +#chan hi` was refused
+// here, so compose.ts's #2179 arm (`peelStatusmsg` → `kind: "statusmsg"`,
+// compose.ts) never saw a target to peel, while `/msg @#chan hi` — the same
+// shape, one byte over — went through.
+//
+// So: refuse when the target IS a channel; let a membership-sigil run in front
+// of a channel through to compose, which peels it with the network's real
+// `PREFIX=` and makes the membership decision it already knows how to make.
+//
+//   `+#chan` → the `+` is a LEVEL, `#chan` is the channel  ⇒ not refused
+//   `+chan`  → a modeless CHANNEL, nothing behind the sigil ⇒ refused
+//   `@#chan` → byte 0 is no channel sigil at all            ⇒ not refused
+//   `!#chan` → `!` is never a level                         ⇒ refused
+//
+// The CHANNEL test behind the run is `DEFAULT_CHANTYPES` rather than the
+// advertised `CHANTYPES=` — the same pin, for the same reason, as
+// `statusmsg.ts`'s header states: the send door peels with the RFC class, so
+// predicting it with a wider one would route a target the door then refuses.
+//
+// The run is walked over `+ @ %` — bahamut/Azzurra's `PREFIX=(ohv)@%+` — and
+// NOT over the whole RFC channel class. Two exclusions, both load-bearing:
+//   * `#` and `!` are channel sigils and never levels; walking them would let
+//     `!#chan` through as if `!` were a level, which is the #12 phantom-window
+//     defect this guard exists for.
+//   * `&` IS the admin level on networks advertising `~&@%+`, but it is also
+//     the RFC local-channel sigil, and on a network where `&` is NOT a level
+//     `&#chan` would open a phantom query window. Unlike `+`, `&` is not a
+//     level everywhere grappa speaks, so it stays refused.
+// `+` is a voice level on every network grappa speaks to, which is why it is
+// the byte whose ambiguity is safe to resolve in favour of the STATUSMSG
+// reading. `~` needs no entry: a target opening with it is not a channel at
+// all, so it never reaches this function.
+const STATUSMSG_RUN_SIGILS: readonly string[] = ["@", "%", "+"];
+
+function isBareChannelTarget(target: string): boolean {
+  if (!isChannelName(target, DEFAULT_CHANTYPES)) return false;
+  for (let i = 1; i < target.length; i += 1) {
+    if (!STATUSMSG_RUN_SIGILS.includes(target.charAt(i - 1))) break;
+    if (isChannelName(target.slice(i), DEFAULT_CHANTYPES)) return false;
+  }
+  return true;
+}
+
 // Read by the verb the user typed, so a `ByKey` (issue 2453).
 const DISPATCH = keysOf<Handler>({
   me: (_verb, rest) => ({ kind: "me", body: rest }),
@@ -705,7 +751,10 @@ const DISPATCH = keysOf<Handler>({
     // instead (open the channel's window / /join it, then type there). The
     // guard is unconditional — no joined-state check — so the guidance is
     // "open its window", never "/msg after joining".
-    if (["#", "&", "!", "+"].includes(target[0] ?? "")) {
+    // #2227 — the refusal is on the target being a channel, not on byte 0:
+    // `+#chan` is a STATUSMSG run and must reach compose.ts's peel. See
+    // `isBareChannelTarget` above for the rule and the `+`-only sigil class.
+    if (isBareChannelTarget(target)) {
       return err(
         verb,
         `/msg is for private messages to a nick, not channels. To message ${target}, open its window (or /join ${target}) and type your message there.`,
