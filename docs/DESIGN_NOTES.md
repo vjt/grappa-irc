@@ -10045,3 +10045,42 @@ REGISTER staged, the refused 001 IDENTIFY staged, and a refused GHOST staged.
 The ninth, a WRITTEN 001 IDENTIFY staging its slot, was green before and after.
 The visitor ordering (no `+r` fed before the rotation) was red in both verbs,
 with the stored password back at the old one after the `+r`.
+<!-- entry #1761b -->
+
+---
+
+## 2026-11-28 — #1761b: the auto-clearer finds its pane by a role the pane sets on itself
+
+#1761 cured a title that Claude Code rewrites mid-session by resolving the
+pane ONCE and pinning its `%NN`. That holds inside one tmux server and fails
+across two: tmux reuses ids. Measured on the Pi on 2026-11-27, when the tmux
+server restarted at 17:05Z: the watch stayed pinned to `%6`, `%6` came back as
+an unrelated Claude session (siem triage), and it received two RESUME TICKs
+(22:59 and 02:08). It refused both; nothing else was touched. The context
+marker check did not catch it because the stranger is also a Claude pane.
+
+### Decision
+
+`auto-clear-watch.sh` looks the pane up on EVERY tick as the one whose tmux
+user option `@role` equals the role argument (default `grappa-orch`), and
+`/orchestrate` Step 0 sets it on its own pane
+(`tmux set -p -t "$TMUX_PANE" @role grappa-orch`). A user option holds on
+both axes that broke the earlier bindings: Claude Code rewrites `pane_title`
+and never a user option, and a tmux restart removes the option together with
+the pane. The failure therefore becomes "no pane carries the role" (BLIND,
+nothing typed) instead of "a stranger holds the old id". Zero or several
+carriers are BLIND; the watch never picks. A change of carrier is logged as
+`BOUND to pane %N, was %M` and resets the idle count, so a pane the watch has
+just met is not nudged on time it spent idle elsewhere.
+
+Gone with it: `--pane`, the `$TMUX_PANE` and title fallbacks, the pin file,
+and `start`'s refusal to run with no pane. That refusal had made the systemd
+unit crashloop at boot. `start` now forks, says BLIND if no pane carries the
+role, and `status` derives the same lookup live.
+
+### Measured
+
+`test/scripts/orchestrate_auto_clear_watch_test.bats`, 14/14 green. Mutant
+(lookup ignores the role and takes the first pane): 5 red, including the
+2026-11-27 shape (the old id is a stranger, no role set: no keys may be sent)
+and "the nudge goes to the carrier, never a neighbour".

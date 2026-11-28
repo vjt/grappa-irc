@@ -104,6 +104,16 @@ Read /srv/grappa/.orchestrate/orchestrator-resume.md
 (DURABLE path — survives host reboot, unlike `/tmp`. The per-pane daemon state files
 stay in `/tmp` — they're regenerable per-run; only the handoff brain must be durable.)
 
+🔴 **AND MARK YOUR OWN PANE — the auto-clearer finds you by this and by nothing else:**
+```
+tmux set -p -t "$TMUX_PANE" @role grappa-orch
+tmux list-panes -a -F '#{pane_id} #{@role}' | grep -c ' grappa-orch$'   # must be 1
+```
+Idempotent, so every `/orchestrate` does it. **Why:** on 2026-11-27 the Pi's tmux restarted, ids were
+reused, and the auto-clearer — pinned to `%6` — typed two RESUME TICKs into an unrelated Claude
+session. A pane user option dies WITH the pane, so after a restart the watch sees *no pane carries
+the role* and types nothing, until this line runs again in the right pane.
+
 🔴🔴 **AND IN THE SAME BREATH AS READING THE HANDOFF: INVOKE THE `grappa-live` SKILL AND POST THE
 ROUND'S STATE TO `#grappa-live` (vjt ORDER, #grappa 2026-08-23 20:48).**
 ```
@@ -137,11 +147,11 @@ handoff is the highest-severity bug. **Resolve panes BY TITLE, never hardcode `%
 are ephemeral ACROSS sessions): sibling = "grappa-worker", orchestrator = "grappa-orch",
 ircbot = "vjt-claude".
 ⚠️ **But a TITLE is only stable across sessions, not inside one — Claude Code renames a pane to
-the conversation's topic as the session runs (#1761).** The two stabilities are on opposite axes,
-so anything LONG-LIVED resolves by title **once, at startup, and then pins the `%NN` for the life
-of that process**. Re-grepping the title on a loop is what blinded the auto-clearer, silently, for
-two days. Re-pinning the title by hand (`tmux select-pane -T grappa-orch`) buys exactly ONE clear
-and is a manual mitigation, never the cure — the rename happens again at the next topic change.
+the conversation's topic as the session runs (#1761) — and an `%NN` is only stable inside ONE tmux
+server: a tmux restart reuses the ids for whatever panes come back (2026-11-27).** So a
+LONG-LIVED process neither re-greps titles (blinded the auto-clearer for two days) nor pins an id
+(typed into a stranger's session): it looks up a **pane user option** (`@role`), which Claude Code
+never rewrites and which disappears with the pane. The pane sets it on itself (Step 0).
 
 **THE HANDOFF IS BOUNDED — PRUNE DONE WORK, DO NOT APPEND (vjt direct order 2026-07-15).**
 The handoff is a LIVE-STATE snapshot, NOT a log. It must not grow unbounded. Every update
@@ -587,7 +597,7 @@ is DELETE-then-write, never append-only:
   `status:queued → status:cooking`. This
   REPLACES waiting for an ircbot handover. Only when the queued set is **EMPTY** do you ping
   vjt "what next?" — don't invent work.
-- **Auto-clearer**: `lib/auto-clear-watch.sh start|status grappa-orch [--pane %NN]` runs an external
+- **Auto-clearer**: `lib/auto-clear-watch.sh start|status grappa-orch` runs an external
   watchdog that, at ctx≥40% (idle+quiet, 60s debounce), FIRST prompts the orchestrator to
   flush its handoff, WAITS for that flush turn to settle (polls busy→idle, capped at
   `AUTOCLEAR_FLUSH_MAX`=180s), and only THEN /clears + /orchestrates. The flush-before-clear
@@ -595,12 +605,11 @@ is DELETE-then-write, never append-only:
   Still: keep the handoff current proactively — the watchdog's flush-prompt is a safety net,
   not a substitute (a wedged/slow flush past the cap clears anyway; and you may be mid-halt on
   something the prompt can't fully capture). ALWAYS flush any open decision before going idle.
-  🔴 **`status` names the PANE it is bound to and re-reads it live — check that id against your own
-  `$TMUX_PANE` (#1761).** The binding is made ONCE at `start` (`--pane %NN` > `$TMUX_PANE` > the
-  title, grepped once and refused if it matches zero or several panes) and never re-resolved, so a
-  `running` line now carries either `watching (ctx=NN%)` or a `BLIND: …` naming what it cannot see.
-  A bare `running` with no pane id means a pre-#1761 build — stop and restart it. `pgrep -fl
-  'auto-clear-watch'` does NOT diagnose this: the pattern matches the probing command itself.
+  🔴 **It finds the pane EVERY TICK as the one carrying `@role=grappa-orch` (set in Step 0), and
+  `status` re-runs that lookup live — check the `pane=` it prints against your own `$TMUX_PANE`.**
+  Zero panes carrying the role, or several, is `BLIND: …` and nothing is typed; the log records
+  every `BOUND to pane %N` and every blind/recovered transition. `pgrep -fl 'auto-clear-watch'`
+  does NOT diagnose it: the pattern matches the probing command itself.
   🔴 **ON THE PI IT IS RUN BY SYSTEMD SINCE 2026-11-07 (vjt's order): user unit
   `grappa-orch-autoclear.service`, `Type=forking`, `ExecStart=… start grappa-orch`, `ExecStop=…
   stop grappa-orch`, `PIDFile=/tmp/orchestrate-autoclear-grappa-orch.pid`, `Restart=on-failure`,
@@ -608,8 +617,8 @@ is DELETE-then-write, never append-only:
   and a manual stop+start takes the loop out of systemd's control. Restart or rebind =
   **`systemctl --user restart grappa-orch-autoclear`**. On resume check BOTH
   `systemctl --user is-active grappa-orch-autoclear` (unit) and `status grappa-orch` (which pane it
-  watches); at boot, before the pane exists, `start` exits 1 and systemd retries every minute until
-  the title matches exactly one pane. ⚠️ **Why both:** the unit had crashlooped since #1761
+  watches); at boot, before the orchestrator exists, the watch runs BLIND (*no pane carries
+  @role*) until Step 0 marks the pane. ⚠️ **Why both:** the unit had crashlooped since #1761
   (ExecStart without `--pane` ⇒ exit 64 every 5 s, ~55k restarts over 2.5 months) while a
   hand-started `nohup` watcher did the work — **`status` answered `running` the whole time and said
   nothing about the unit.** A healthy watcher next to a dead supervisor is the same observable as a
@@ -3315,8 +3324,9 @@ nessuna riscrittura possibile. Misurala lo stesso se costa due comandi, ma dichi
   diceva **`running`** con un pid vivo, il log **cresceva**, e l'orchestratore non veniva clearato mai.
   🥇 **`running` NON basta: il probe corretto e' `status` PIU' il pane su cui sta FIRING nel log, letto
   contro `$TMUX_PANE`.** Un watchdog vivo puntato altrove e' peggio di uno morto, perche' mente.
-  🔧 **Cura: `tmux select-pane -t "$TMUX_PANE" -T grappa-orch` e riavviare il watch.** Rifallo a ogni
-  resume — il titolo torna a cambiare da solo.
+  🔧 ~~Cura: `tmux select-pane -T grappa-orch` e riavviare il watch.~~ **Superata due volte**: prima dal
+  pin dell'id (#1761), che a sua volta e' caduto al riavvio di tmux del 2026-11-27; **oggi il watch
+  cerca `@role=grappa-orch` a ogni tick** e il pane se lo mette da solo allo Step 0 — vedi "Auto-clearer".
   ⚠️ **Costo reale la prima volta: entrambe le worker ferme ~13 ORE** mentre l'orchestratore era all'87%
   e i suoi tick `STALL state=idle` scorrevano senza che nessuno agisse.
 

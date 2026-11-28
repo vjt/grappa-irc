@@ -1,57 +1,45 @@
 #!/usr/bin/env bats
 #
-# .claude/skills/orchestrate/lib/auto-clear-watch.sh — the pane binding (#1761).
+# .claude/skills/orchestrate/lib/auto-clear-watch.sh — finding the pane by
+# its tmux `@role` user option, on every tick.
 #
-# The watchdog used to re-grep the pane TITLE on every tick and, when the
-# grep came back empty, `continue` with no log line at all. Claude Code
-# renames a pane to the conversation's topic while the session runs, so
-# the moment the topic changed the watch stopped watching — while `status`
-# still said `running` with a live pid. Observed twice; once bound to an
-# unrelated pane (`%5`), which is worse than dead because it lies.
+# Two bindings came before this one, and each typed into, or ignored, the
+# wrong pane on one axis:
 #
-# So these cases are about OBSERVABILITY, not about resolution:
+#   - the TITLE (re-grepped per tick): Claude Code renames its pane to the
+#     conversation topic, so the watch went silently dead (#1761);
+#   - the pane ID (pinned at start, #1761's cure): ids are reused by the
+#     next tmux server. On 2026-11-27 the Pi's tmux restarted, `%6` came back
+#     as an unrelated Claude session, and the watch typed RESUME TICKs into it.
 #
-#   1. a rename under the watch must not blind it (the id is pinned at
-#      start, and a title is not ours to rely on);
-#   2. every state in which the watchdog CANNOT SEE must be recorded —
-#      there are three of them, and all three used to be a bare
-#      `continue`. Recorded as a TRANSITION (in and out), not as one line
-#      per tick: a line every 15s buries the transition it is supposed to
-#      announce;
-#   3. `status` must name the pane it is bound to and DERIVE, live,
-#      whether it can still read it. `running` without a pane id is
-#      exactly how the `%5` misbinding survived, and a status that
-#      reported a remembered state would be one more thing that can go
-#      stale.
+# So these cases are about WHERE KEYS GO and WHAT THE WATCH SAYS:
 #
-# ...and, since issue 2214, a fourth: the number it reads must be the
-# BOUND PANE'S OWN. A watch can be alive, bound to the right pane and
-# reading it fine, and still act on somebody else's percentage — which
-# is the same failure dressed differently, because it too ends in a live
-# pid that never fires.
+#   1. keys go only to the one pane carrying the role — never to a pane that
+#      merely holds an old id, never to a neighbour, never to one of several;
+#   2. every state in which the watchdog CANNOT SEE is recorded as a
+#      TRANSITION (in and out), not as one line per tick;
+#   3. `status` names the pane and DERIVES, live, whether it can read it;
+#   4. the number it reads is the pane's OWN (issue 2214).
 #
 # tmux is stubbed on PATH: the pane table lives in $PANES (TAB-separated
-# `%id<TAB>title`) and each pane's screen in $STATE/cap-<n>, so a case can
-# rename a pane, delete it, or change the rendered context percentage
-# while the watchdog is mid-flight. A real tmux server is not available on
-# a worker host anyway (measured: the pane is on the ssh client side).
+# `%id<TAB>role`, role empty when unset) and each pane's screen in
+# $STATE/cap-<n>. The stub records every list-panes format it is asked for,
+# so a regression back to reading titles is visible.
 #
-# The suite never uses the real "grappa-orch" title: PIDFILE/LOGFILE/
-# PANEFILE are derived from it under /tmp, and a case that used it would
-# clobber the operator's live watchdog state.
+# The suite never uses the real "grappa-orch" role: PIDFILE/LOGFILE are
+# derived from it under /tmp, and a case that used it would clobber the
+# operator's live watchdog state.
 
 load ../bats_helpers
 
 setup() {
     WATCH="$BATS_TEST_DIRNAME/../../.claude/skills/orchestrate/lib/auto-clear-watch.sh"
 
-    # Unique per test file+case so a stray /tmp file cannot leak between
-    # cases, and the real watchdog's slug can never be hit.
-    TITLE="bats-1761-${BATS_SUITE_TEST_NUMBER}"
-    SLUG="$(printf '%s' "$TITLE" | tr -c 'a-zA-Z0-9' '-')"
+    ROLE="bats-role-${BATS_SUITE_TEST_NUMBER}"
+    SLUG="$(printf '%s' "$ROLE" | tr -c 'a-zA-Z0-9' '-')"
     PIDFILE="/tmp/orchestrate-autoclear-${SLUG}.pid"
     LOGFILE="/tmp/orchestrate-autoclear-${SLUG}.log"
-    rm -f "$PIDFILE" "$LOGFILE" "/tmp/orchestrate-autoclear-${SLUG}."*
+    rm -f "/tmp/orchestrate-autoclear-${SLUG}."*
 
     STATE="$BATS_TEST_TMPDIR/state"
     mkdir -p "$STATE"
@@ -59,13 +47,15 @@ setup() {
     PANES="$STATE/panes"
     : > "$PANES"
     export PANES
+    KEYS="$STATE/keys.log"
+    : > "$KEYS"
 
     FAKE_DIR="$BATS_TEST_TMPDIR/fake"
     mkdir -p "$FAKE_DIR"
 
-    # A tmux that answers from $PANES and $STATE/cap-<n>. capture-pane
-    # FAILS for a pane that is not in the table — that non-zero is how the
-    # real thing reports "can't find pane", and the watchdog reads it.
+    # list-panes answers ONLY the role format; anything else is a loud
+    # failure. capture-pane FAILS for a pane not in the table — that non-zero
+    # is how the real thing reports "can't find pane".
     cat > "$FAKE_DIR/tmux" <<'EOF'
 #!/bin/sh
 sub="$1"; shift
@@ -78,11 +68,9 @@ list-panes)
         *)  shift ;;
         esac
     done
-    if [ "$fmt" = '#{pane_id}' ]; then
-        awk -F'\t' 'NF {print $1}' "$PANES"
-    else
-        awk -F'\t' 'NF {printf "%s %s\n", $1, $2}' "$PANES"
-    fi
+    printf '%s\n' "$fmt" >> "$STATE/formats.log"
+    [ "$fmt" = '#{pane_id} #{@role}' ] || { echo "fake tmux: unexpected format '$fmt'" >&2; exit 3; }
+    awk -F'\t' 'NF {printf "%s %s\n", $1, $2}' "$PANES"
     ;;
 capture-pane)
     target=""
@@ -106,16 +94,11 @@ EOF
     chmod +x "$FAKE_DIR/tmux"
     export PATH="$FAKE_DIR:$PATH"
 
-    # tmux is inherited by the forked watchdog, so the knobs must be too.
     export AUTOCLEAR_TICK=1
-    # High enough that no case ever reaches the send-keys/clear path: this
-    # suite is about what the loop OBSERVES, not about firing.
+    # High enough that no case reaches the /clear path: firing is not what
+    # this suite is about.
     export AUTOCLEAR_IDLE_TICKS=99
     export AUTOCLEAR_THRESHOLD=40
-
-    # $TMUX_PANE is NOT set in a Claude Bash-tool environment (measured on
-    # the worker harness), so no case may inherit one from the runner.
-    unset TMUX_PANE
 }
 
 teardown() {
@@ -127,12 +110,13 @@ teardown() {
 
 # --- helpers -----------------------------------------------------------------
 
-add_pane() { printf '%s\t%s\n' "$1" "$2" >> "$PANES"; }
+# add_pane %id [role]
+add_pane() { printf '%s\t%s\n' "$1" "${2:-}" >> "$PANES"; }
 
-rename_pane() {
-    local id="$1" new="$2" tmp="$PANES.tmp"
-    awk -F'\t' -v id="$id" -v new="$new" \
-        'NF { if ($1 == id) printf "%s\t%s\n", $1, new; else print }' "$PANES" > "$tmp"
+set_role() {
+    local id="$1" role="$2" tmp="$PANES.tmp"
+    awk -F'\t' -v id="$id" -v role="$role" \
+        'NF { if ($1 == id) printf "%s\t%s\n", $1, role; else print }' "$PANES" > "$tmp"
     mv "$tmp" "$PANES"
 }
 
@@ -142,25 +126,16 @@ kill_pane() {
     mv "$tmp" "$PANES"
 }
 
-# An idle Claude pane rendering a context percentage above the threshold:
-# qualifying, so the loop logs a progress line on every tick.
+# An idle Claude pane rendering a context percentage.
 render_idle_at() {
     printf 'some scrollback\n🧠 %s%% context left\n❯ \n' "$2" > "$STATE/cap-$(printf '%s' "$1" | tr -d '%')"
 }
 
-# The same, but with OTHER panes' status lines sitting in the scrollback
-# above it (issue 2214).
-#
-# This is the orchestrator pane's ordinary shape, not a contrived one: it
-# samples its workers by capturing THEIR panes, so their status lines land
-# in ITS buffer as ordinary command output. They are scrollback, so they
-# are ABOVE the live status block the UI keeps pinned at the bottom.
-# Measured on 2026-09-15: eight foreign markers in 200 lines of the
-# orchestrator pane, and the watch reported one of them (7%) while the
-# pane itself read 39% — one point under its own firing threshold.
-#
-# A pane with a CLEAN scrollback does not measure this: it is exactly the
-# case in which the broken parse is right by accident.
+# The same, with OTHER panes' status lines in the scrollback above it (issue
+# 2214) — the orchestrator pane's ordinary shape, since it samples its
+# workers by capturing their panes. Measured 2026-09-15: the watch reported
+# a foreign 7% while the pane read 39%. A CLEAN scrollback cannot measure
+# this: it is the case in which the broken parse is right by accident.
 render_idle_at_below_foreign() {
     local capfile; capfile="$STATE/cap-$(printf '%s' "$1" | tr -d '%')"
     {
@@ -175,131 +150,139 @@ render_idle_at_below_foreign() {
 }
 
 count_in_log() { grep -c "$1" "$LOGFILE" 2>/dev/null || true; }
+keys_to() { grep -c -- "-t $1 " "$KEYS" 2>/dev/null || true; }
 
 # Ticks are 1s; give the loop room for a few without racing a slow box.
 wait_ticks() { sleep "$1"; }
 
-# --- binding at start --------------------------------------------------------
+# Resume nudges after 2s idle, so a case can see where keys would go.
+nudge_fast() {
+    export AUTOCLEAR_RESUME_IDLE=2
+    export AUTOCLEAR_RESUME_COOLDOWN=1
+}
 
-@test "start names the pane it bound, so it can be checked against the real one" {
-    add_pane '%3' "$TITLE — some topic"
+# --- where the keys go -------------------------------------------------------
+
+@test "start names the pane carrying the role" {
+    add_pane '%3' "$ROLE"
     render_idle_at '%3' 55
 
-    run "$WATCH" start "$TITLE"
+    run "$WATCH" start "$ROLE"
 
     [ "$status" -eq 0 ]
-    # WHICH pane, not just "started". The %5 misbinding survived precisely
-    # because nothing ever printed the id.
-    [[ "$output" == *"%3"* ]]
+    [[ "$output" == *"pane=%3"* ]]
 }
 
-@test "start refuses, loudly, when no pane title matches" {
-    add_pane '%3' 'unrelated shell'
+@test "after a tmux restart the old id belongs to a stranger: nothing is typed (2026-11-27)" {
+    nudge_fast
+    # The incident: the id the orchestrator used to have is now another
+    # Claude session, idle, and nobody has set the role on the new server.
+    add_pane '%6'
+    render_idle_at '%6' 18
 
-    run "$WATCH" start "$TITLE"
-
-    # Starting a watchdog that can never resolve is the silence itself.
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"$TITLE"* ]]
-    refute test -f "$PIDFILE"
-}
-
-@test "start refuses when the title is AMBIGUOUS instead of taking the first" {
-    add_pane '%3' "$TITLE — orchestrator"
-    add_pane '%5' "$TITLE — a second one"
-
-    run "$WATCH" start "$TITLE"
-
-    # `head -1` over two matches is an arbitrary binding presented as a
-    # resolved one — the shape of the %5 report.
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"%3"* ]]
-    [[ "$output" == *"%5"* ]]
-    refute test -f "$PIDFILE"
-}
-
-@test "--pane binds explicitly and does not consult the title at all" {
-    add_pane '%7' 'a pane whose title says nothing about the watch'
-    render_idle_at '%7' 55
-
-    run "$WATCH" start "$TITLE" --pane '%7'
-
+    run "$WATCH" start "$ROLE"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"%7"* ]]
+    [[ "$output" == *"BLIND"* ]]
+    [[ "$output" == *"no pane carries @role=$ROLE"* ]]
+    wait_ticks 5
+
+    [ "$(keys_to '%6')" -eq 0 ]
+    [ ! -s "$KEYS" ]
+    grep -q 'no pane carries' "$LOGFILE"
 }
 
-@test "--pane naming a pane that does not exist is refused, not accepted" {
-    add_pane '%3' "$TITLE"
+@test "the nudge goes to the pane carrying the role, never to a neighbour" {
+    nudge_fast
+    add_pane '%6'
+    render_idle_at '%6' 18
+    add_pane '%5' "$ROLE"
+    render_idle_at '%5' 18
 
-    run "$WATCH" start "$TITLE" --pane '%99'
+    "$WATCH" start "$ROLE"
+    wait_ticks 5
 
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"%99"* ]]
-    refute test -f "$PIDFILE"
+    [ "$(keys_to '%5')" -ge 1 ]
+    [ "$(keys_to '%6')" -eq 0 ]
 }
 
-# --- the defect: a rename under the watch ------------------------------------
+@test "when the role moves to another pane, the watch follows and says so" {
+    add_pane '%6' "$ROLE"
+    render_idle_at '%6' 55
+    add_pane '%5'
+    render_idle_at '%5' 55
 
-@test "a RENAME under the watch does not blind it (#1761)" {
-    add_pane '%3' "$TITLE — orchestrator"
-    render_idle_at '%3' 55
+    "$WATCH" start "$ROLE"
+    wait_ticks 2
+    grep -q 'BOUND to pane %6' "$LOGFILE"
 
-    "$WATCH" start "$TITLE"
+    set_role '%6' ''
+    set_role '%5' "$ROLE"
     wait_ticks 3
 
-    local before; before="$(count_in_log 'idle+quiet')"
-    [ "$before" -ge 1 ]
-
-    # Claude Code renames the pane to the conversation topic mid-session.
-    rename_pane '%3' 'reviewing the scrollback pagination bug'
-    wait_ticks 3
-
-    local after; after="$(count_in_log 'idle+quiet')"
-    # The observation must CONTINUE. Before #1761 the title grep came back
-    # empty here and the loop went quiet for good.
-    [ "$after" -gt "$before" ]
+    grep -q 'BOUND to pane %5 (@role=.*), was %6' "$LOGFILE"
 }
 
-# --- the reverse: a pinned pane that dies must not be a second silence -------
+@test "several panes carrying the role is BLIND: it never picks one" {
+    nudge_fast
+    add_pane '%3' "$ROLE"
+    render_idle_at '%3' 18
+    add_pane '%5' "$ROLE"
+    render_idle_at '%5' 18
 
-@test "a pane that DISAPPEARS is logged — once, on the transition (#1761)" {
-    add_pane '%3' "$TITLE — orchestrator"
+    "$WATCH" start "$ROLE"
+    wait_ticks 5
+
+    [ ! -s "$KEYS" ]
+    [ "$(count_in_log 'AMBIGUOUS')" -eq 1 ]
+    grep 'AMBIGUOUS' "$LOGFILE" | grep -q '%3'
+    grep 'AMBIGUOUS' "$LOGFILE" | grep -q '%5'
+}
+
+@test "the watch never reads pane titles" {
+    add_pane '%3' "$ROLE"
     render_idle_at '%3' 55
 
-    "$WATCH" start "$TITLE"
+    "$WATCH" start "$ROLE"
+    wait_ticks 2
+    run "$WATCH" status "$ROLE"
+
+    # Claude Code rewrites titles mid-session; a title in the lookup is the
+    # #1761 failure coming back.
+    refute grep -q 'pane_title' "$STATE/formats.log"
+}
+
+# --- the blind states, as transitions -----------------------------------------
+
+@test "a role that DISAPPEARS is logged — once, on the transition" {
+    add_pane '%3' "$ROLE"
+    render_idle_at '%3' 55
+
+    "$WATCH" start "$ROLE"
     wait_ticks 2
 
     kill_pane '%3'
     wait_ticks 5
 
-    # It must SAY it (the bare `continue` said nothing at all)...
-    local blind; blind="$(count_in_log 'BLIND')"
-    [ "$blind" -eq 1 ]
-    grep -q 'GONE' "$LOGFILE"
-    # ...and exactly once over five ticks. A line every tick buries the
-    # transition and trains the reader to skip the file; `status` is the
-    # surface that answers "still blind?" on demand.
+    [ "$(count_in_log 'BLIND')" -eq 1 ]
+    grep -q 'no pane carries' "$LOGFILE"
 }
 
 @test "a pane that renders no context marker is logged, not silently skipped" {
-    add_pane '%3' "$TITLE — orchestrator"
-    # A pane that is not a Claude session at all — the %5 misbinding's
-    # observable. No 🧠 marker anywhere.
+    add_pane '%3' "$ROLE"
     printf 'total 0\ndrwxr-xr-x  mbarnaba  staff\n❯ \n' > "$STATE/cap-3"
 
-    "$WATCH" start "$TITLE"
+    "$WATCH" start "$ROLE"
     wait_ticks 4
 
-    local blind; blind="$(count_in_log 'BLIND')"
-    [ "$blind" -eq 1 ]
+    [ "$(count_in_log 'BLIND')" -eq 1 ]
     grep -q 'context marker' "$LOGFILE"
 }
 
 @test "coming back from blind is logged too, so tail -4 is not stale" {
-    add_pane '%3' "$TITLE — orchestrator"
+    add_pane '%3' "$ROLE"
     render_idle_at '%3' 55
 
-    "$WATCH" start "$TITLE"
+    "$WATCH" start "$ROLE"
     wait_ticks 2
     kill_pane '%3'
     wait_ticks 3
@@ -307,47 +290,40 @@ wait_ticks() { sleep "$1"; }
     [ "$(count_in_log 'BLIND')" -eq 1 ]
     [ "$(count_in_log 'RECOVERED')" -eq 0 ]
 
-    # Without the exit transition, a log whose last line is BLIND reads as
-    # "still blind" forever after the watch has recovered.
-    add_pane '%3' 'some entirely new topic'
+    add_pane '%4' "$ROLE"
+    render_idle_at '%4' 55
     wait_ticks 3
 
     [ "$(count_in_log 'RECOVERED')" -eq 1 ]
 }
 
-# --- the defect: a FOREIGN status line in the scrollback (issue 2214) ---------
+# --- a FOREIGN status line in the scrollback (issue 2214) ---------------------
 
-@test "the loop reads the BOUND pane's own context, not a foreign one above it" {
-    add_pane '%3' "$TITLE — orchestrator"
+@test "the loop reads the pane's own context, not a foreign one above it" {
+    add_pane '%3' "$ROLE"
     render_idle_at_below_foreign '%3' 55
 
-    "$WATCH" start "$TITLE"
+    "$WATCH" start "$ROLE"
     wait_ticks 3
 
-    # The defended assertion: the number the loop ACTS on is the pane's.
-    # Reading the first marker in the buffer picks 7%, which is under the
-    # threshold, so the loop goes quiet and logs nothing at all — a
-    # watchdog that never fires is indistinguishable from a calm session.
     [ "$(count_in_log 'ctx=55%')" -ge 1 ]
-    # 90% is ABOVE the threshold, so these two arms cannot be satisfied by
-    # a loop that merely stayed silent: a parse that picked either foreign
-    # marker would have logged it.
+    # 90% is ABOVE the threshold, so a parse that picked either foreign
+    # marker would have logged it: these arms cannot pass by silence.
     [ "$(count_in_log 'ctx=90%')" -eq 0 ]
     [ "$(count_in_log 'ctx=7%')" -eq 0 ]
 }
 
-@test "status reports the BOUND pane's own context, not a foreign one above it" {
-    add_pane '%3' "$TITLE — orchestrator"
+@test "status reports the pane's own context, not a foreign one above it" {
+    add_pane '%3' "$ROLE"
     render_idle_at_below_foreign '%3' 55
 
-    "$WATCH" start "$TITLE"
+    "$WATCH" start "$ROLE"
 
-    run "$WATCH" status "$TITLE"
+    run "$WATCH" status "$ROLE"
 
     [ "$status" -eq 0 ]
-    # `watching (ctx=NN%)` is printed by status ALONE — matching a bare
-    # `ctx=55%` would also be satisfied by the log tail status appends,
-    # which is the loop's observation and not this one.
+    # `watching (ctx=NN%)` is printed by status ALONE; a bare `ctx=55%` would
+    # also match the log tail status appends.
     [[ "$output" == *"watching (ctx=55%)"* ]]
     refute grep -qF 'watching (ctx=7%)' <<<"$output"
     refute grep -qF 'watching (ctx=90%)' <<<"$output"
@@ -356,44 +332,42 @@ wait_ticks() { sleep "$1"; }
 # --- status ------------------------------------------------------------------
 
 @test "status names the pane it is watching" {
-    add_pane '%3' "$TITLE — orchestrator"
+    add_pane '%3' "$ROLE"
     render_idle_at '%3' 55
 
-    "$WATCH" start "$TITLE"
+    "$WATCH" start "$ROLE"
 
-    run "$WATCH" status "$TITLE"
+    run "$WATCH" status "$ROLE"
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"running"* ]]
-    # Without this the operator cannot compare the binding with reality.
-    [[ "$output" == *"%3"* ]]
+    [[ "$output" == *"pane=%3"* ]]
 }
 
-@test "status says the bound pane is GONE rather than just running" {
-    add_pane '%3' "$TITLE — orchestrator"
+@test "status says BLIND when no pane carries the role, rather than just running" {
+    add_pane '%3' "$ROLE"
     render_idle_at '%3' 55
 
-    "$WATCH" start "$TITLE"
-    kill_pane '%3'
+    "$WATCH" start "$ROLE"
+    set_role '%3' ''
 
-    run "$WATCH" status "$TITLE"
+    run "$WATCH" status "$ROLE"
 
-    # A live pid on a dead pane is the lie the issue was filed about.
-    [[ "$output" == *"%3"* ]]
-    [[ "$output" == *"GONE"* ]]
+    [[ "$output" == *"BLIND"* ]]
+    [[ "$output" == *"no pane carries"* ]]
 }
 
 @test "status DERIVES blindness live, it does not report a remembered state" {
-    add_pane '%3' "$TITLE — orchestrator"
+    add_pane '%3' "$ROLE"
     render_idle_at '%3' 55
 
-    "$WATCH" start "$TITLE"
+    "$WATCH" start "$ROLE"
 
-    # The pane still EXISTS, so an existence check alone would call this
-    # healthy. It stopped being a Claude pane — the %5 shape exactly.
+    # The pane still carries the role, so a lookup alone would call this
+    # healthy. It stopped being a Claude pane.
     printf 'total 0\ndrwxr-xr-x  mbarnaba  staff\n❯ \n' > "$STATE/cap-3"
 
-    run "$WATCH" status "$TITLE"
+    run "$WATCH" status "$ROLE"
 
     [[ "$output" == *"%3"* ]]
     [[ "$output" == *"BLIND"* ]]

@@ -13,35 +13,35 @@
 # just-dispatched phase, a live waiter id) would lose it. Automates what
 # vjt does manually.
 #
-# PANE BINDING — resolved ONCE at `start`, then PINNED (#1761)
+# PANE BINDING — looked up by ROLE on every tick (2026-11-28)
 #
-# This used to re-grep the pane TITLE on every tick, on the reasoning that
-# "pane ids are ephemeral, the title is stable". Half of that is true, and
-# the wrong half was load-bearing: an id is unstable ACROSS sessions, a
-# title is unstable WITHIN one. Claude Code renames its pane to the
-# conversation's topic while the session runs, so the first topic change
-# made the grep return empty — and the loop `continue`d with no log line,
-# no error, a live pid and a `status` still reading `running`. Observed
-# twice: once dead for two days, once bound to `%5`, an unrelated pane,
-# which is worse than dead because it lies. Cost the first time: the
-# orchestrator at 87% context with both workers idle ~13 hours.
+# The pane is the one whose tmux user option `@role` equals the ROLE
+# argument (default `grappa-orch`). The orchestrator sets it on its OWN
+# pane as part of `/orchestrate` step 0:
 #
-# A watchdog lives inside ONE session, which is exactly the axis on which
-# an id does not move. So the binding happens once and never again:
+#   tmux set -p -t "$TMUX_PANE" @role grappa-orch
 #
-#   --pane %NN   explicit, wins over everything
-#   $TMUX_PANE   when set AND naming a live pane
-#   the TITLE    grepped ONCE, and only if it matches EXACTLY ONE pane
+# Two bindings came before this one and each failed on one axis:
 #
-# Refusals are synchronous and non-zero — no pane, an ambiguous title, a
-# `--pane` that does not exist: nothing is forked. A watch that cannot
-# resolve must not become a process that reports `running`.
+#   - the TITLE, re-grepped every tick: Claude Code renames its pane to the
+#     conversation topic, so the grep went empty and the loop `continue`d
+#     silently — dead for two days, once bound to an unrelated `%5` (#1761);
+#   - the pane ID, resolved once and PINNED (#1761's cure): an id is stable
+#     inside one tmux server and reused by the next. The Pi's tmux restarted
+#     at 17:05Z 2026-11-27, `%6` came back as a different Claude session
+#     (siem triage), and the watch typed two RESUME TICKs into it.
+#
+# `@role` holds on both axes: Claude Code rewrites `pane_title` and never a
+# user option, and a tmux restart takes the option away WITH the pane, so
+# the failure becomes "no pane carries the role" — BLIND, nothing typed —
+# instead of "a stranger's pane carries the old id". Zero or several panes
+# carrying it is BLIND too; the watch never picks one.
 #
 # LOG POSTURE: healthy-but-not-firing is quiet (ctx below threshold, pane
 # busy — the watch is working, the conditions just aren't met). CANNOT-SEE
-# is loud, and there are THREE such states, not one: the capture fails
-# (pane gone), the capture is empty, or the pane renders no context
-# marker at all. Each used to end in a bare `continue`.
+# is loud, and there are FIVE such states, not one: no pane carries the
+# role, several do, the capture fails (pane gone), the capture is empty,
+# or the pane renders no context marker at all. `observe` names each.
 #
 # "Loud every time" is implemented as TRANSITION + DERIVED STATUS, not as
 # one identical line per tick. A line every 15s is not more visible than
@@ -52,9 +52,6 @@
 # re-runs the very same observation LIVE, so the answer to "is it
 # actually watching" is measured on demand rather than remembered. No
 # state file: the blindness is derived from the pane, never duplicated.
-#
-# The pane is deliberately NOT re-resolved when it goes: re-resolving is
-# how it bound `%5`.
 #
 # Safeguards (all must hold to fire):
 #   - ctx >= THRESHOLD (default 40%)
@@ -73,35 +70,24 @@
 # (typing into an open permission modal would answer it at random).
 #
 # Usage:
-#   auto-clear-watch.sh start  [TITLE] [--pane %NN]
-#   auto-clear-watch.sh stop   [TITLE]
-#   auto-clear-watch.sh status [TITLE]
+#   auto-clear-watch.sh start  [ROLE]
+#   auto-clear-watch.sh stop   [ROLE]
+#   auto-clear-watch.sh status [ROLE]
 set -u
 
 CMD="${1:-start}"
 [ $# -gt 0 ] && shift
 
-TITLE=""
-PANE_OPT=""
-SOURCE_OPT=""
+ROLE=""
 while [ $# -gt 0 ]; do
   case "$1" in
-  --pane)
-    [ $# -ge 2 ] || { echo "auto-clear-watch: --pane needs a pane id (%NN)" >&2; exit 64; }
-    PANE_OPT="$2"; shift 2 ;;
-  --pane=*) PANE_OPT="${1#--pane=}"; shift ;;
-  # Internal: `start` tells the forked loop how the pane was bound, so
-  # the log records it. Not part of the operator surface.
-  --source)
-    [ $# -ge 2 ] || { echo "auto-clear-watch: --source needs a value" >&2; exit 64; }
-    SOURCE_OPT="$2"; shift 2 ;;
   -*) echo "auto-clear-watch: unknown option '$1'" >&2; exit 64 ;;
   *)
-    [ -z "$TITLE" ] || { echo "auto-clear-watch: unexpected argument '$1'" >&2; exit 64; }
-    TITLE="$1"; shift ;;
+    [ -z "$ROLE" ] || { echo "auto-clear-watch: unexpected argument '$1'" >&2; exit 64; }
+    ROLE="$1"; shift ;;
   esac
 done
-TITLE="${TITLE:-grappa-orch}"
+ROLE="${ROLE:-grappa-orch}"
 
 THRESHOLD="${AUTOCLEAR_THRESHOLD:-40}"
 TICK="${AUTOCLEAR_TICK:-15}"                       # seconds between checks
@@ -111,67 +97,11 @@ FLUSH_MAX="${AUTOCLEAR_FLUSH_MAX:-180}"            # max secs to wait for the pr
 RESUME_IDLE="${AUTOCLEAR_RESUME_IDLE:-900}"        # secs of unbroken idle below THRESHOLD before a resume nudge
 RESUME_COOLDOWN="${AUTOCLEAR_RESUME_COOLDOWN:-900}" # pause after a nudge (0 disables the branch entirely)
 
-SLUG="$(printf '%s' "$TITLE" | tr -c 'a-zA-Z0-9' '-')"
+SLUG="$(printf '%s' "$ROLE" | tr -c 'a-zA-Z0-9' '-')"
 PIDFILE="/tmp/orchestrate-autoclear-${SLUG}.pid"
 LOGFILE="/tmp/orchestrate-autoclear-${SLUG}.log"
-PANEFILE="/tmp/orchestrate-autoclear-${SLUG}.pane"   # what `status` reports (#1761)
 
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" >> "$LOGFILE"; }
-
-pane_exists() {
-  [ -n "${1:-}" ] || return 1
-  # -x: `%1` must not be satisfied by `%12`.
-  tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qxF "$1"
-}
-
-# Pane ids whose TITLE contains $TITLE. Matched against the title FIELD
-# only — the id shares the line and must not be able to satisfy the match.
-panes_matching_title() {
-  tmux list-panes -a -F '#{pane_id} #{pane_title}' 2>/dev/null \
-    | awk -v t="$TITLE" '{ title = substr($0, index($0, " ") + 1); if (index(title, t) > 0) print $1 }'
-}
-
-# Echoes "<pane_id> <source>" on success. Diagnostics go to stderr and a
-# failure returns non-zero: the caller must NOT fork on one.
-resolve_pane_once() {
-  if [ -n "$PANE_OPT" ]; then
-    if pane_exists "$PANE_OPT"; then
-      printf '%s explicit\n' "$PANE_OPT"
-      return 0
-    fi
-    printf "auto-clear-watch: --pane %s names no live pane — refusing to start.\n" "$PANE_OPT" >&2
-    return 1
-  fi
-
-  if [ -n "${TMUX_PANE:-}" ]; then
-    if pane_exists "$TMUX_PANE"; then
-      printf '%s TMUX_PANE\n' "$TMUX_PANE"
-      return 0
-    fi
-    printf "auto-clear-watch: \$TMUX_PANE=%s is set but names no live pane — falling through to the title.\n" \
-      "$TMUX_PANE" >&2
-  fi
-
-  local matches count
-  matches="$(panes_matching_title)"
-  count="$(printf '%s\n' "$matches" | grep -c '[^[:space:]]')" || true
-
-  if [ "$count" -eq 0 ]; then
-    printf "auto-clear-watch: no tmux pane title contains '%s' — refusing to start a watch that can never resolve.\n" \
-      "$TITLE" >&2
-    printf "auto-clear-watch: pass --pane %%NN if the pane has been renamed (Claude Code renames it to the conversation topic).\n" >&2
-    return 1
-  fi
-
-  if [ "$count" -gt 1 ]; then
-    printf "auto-clear-watch: AMBIGUOUS — %s panes match title '%s': %s\n" \
-      "$count" "$TITLE" "$(printf '%s' "$matches" | tr '\n' ' ')" >&2
-    printf "auto-clear-watch: pass --pane %%NN to say which one. Refusing to guess.\n" >&2
-    return 1
-  fi
-
-  printf '%s title\n' "$matches"
-}
 
 # The LAST marker in the capture, never the first (issue 2214). A pane's
 # own status block is the live bottom of the screen; anything else that
@@ -200,33 +130,42 @@ dialog_pending() {
   printf '%s' "$1" | grep -qE '^[[:space:]│]*(1\.|❯ 1\.) Yes|↑/↓ to navigate|Enter to select'
 }
 
-# The ONE classifier for "the watch cannot see", shared by the loop and by
-# `status` so the two can never disagree about what blindness is. Takes a
-# capture attempt (pane, tmux's exit code, the captured text) and echoes
-# the reason, or NOTHING when the pane is readable.
-blind_reason() {
-  local pane="$1" rc="$2" cap="$3"
+# The ONE observation, shared by the loop and by `status` so the two can
+# never disagree about what blindness is. Looks the pane up by role, then
+# reads it. Sets OBS_PANE (the id, or empty), OBS_CAP (the capture) and
+# OBS_REASON (why it cannot see; EMPTY when the pane is readable).
+observe() {
+  OBS_PANE=""; OBS_CAP=""; OBS_REASON=""
+  local matches count rc=0
+  matches="$(tmux list-panes -a -F '#{pane_id} #{@role}' 2>/dev/null \
+    | awk -v r="$ROLE" '{ id = $1; sub(/^[^ ]+ ?/, ""); if ($0 == r) print id }')"
+  count="$(printf '%s' "$matches" | grep -c .)" || true
+  if [ "$count" -eq 0 ]; then
+    OBS_REASON="no pane carries @role=${ROLE} (tmux restarted, or the orchestrator has not run /orchestrate step 0 yet). From the orchestrator pane: tmux set -p -t \"\$TMUX_PANE\" @role ${ROLE}"
+    return
+  fi
+  if [ "$count" -gt 1 ]; then
+    OBS_REASON="AMBIGUOUS: ${count} panes carry @role=${ROLE}: $(printf '%s' "$matches" | tr '\n' ' ')— refusing to guess; unset it on all but one (tmux set -p -u -t %NN @role)."
+    return
+  fi
+  OBS_PANE="$matches"
+  OBS_CAP="$(tmux capture-pane -t "$OBS_PANE" -p -S -25 2>/dev/null)" || rc=$?
   if [ "$rc" -ne 0 ]; then
-    printf 'pane %s is GONE (tmux rc=%s) — the pane no longer exists, or there is no tmux server. This id was bound once at start and is deliberately NOT re-resolved; stop and restart the watch.' \
-      "$pane" "$rc"
-    return 0
-  fi
-  if [ -z "$cap" ]; then
-    printf 'pane %s captured EMPTY — nothing to read.' "$pane"
-    return 0
-  fi
-  if [ -z "$(parse_ctx "$cap")" ]; then
-    printf "pane %s renders no '🧠 NN%%' context marker — it may not be the Claude pane at all." "$pane"
-    return 0
+    OBS_REASON="pane ${OBS_PANE} is GONE (tmux rc=${rc})."
+  elif [ -z "$OBS_CAP" ]; then
+    OBS_REASON="pane ${OBS_PANE} captured EMPTY — nothing to read."
+  elif [ -z "$(parse_ctx "$OBS_CAP")" ]; then
+    OBS_REASON="pane ${OBS_PANE} renders no '🧠 NN%' context marker — it may not be the Claude pane at all."
   fi
 }
 
 run() {
-  local pane="$1" bound_by="$2"
   printf '%s' "$$" > "$PIDFILE"
-  printf '%s' "$pane" > "$PANEFILE"
-  log "START pane=${pane} (bound by ${bound_by}) title='$TITLE' threshold=${THRESHOLD}% tick=${TICK}s idle_req=${IDLE_TICKS_REQUIRED} cooldown=${COOLDOWN}s"
+  log "START role='$ROLE' threshold=${THRESHOLD}% tick=${TICK}s idle_req=${IDLE_TICKS_REQUIRED} cooldown=${COOLDOWN}s"
   local qualifying=0 idle_secs=0
+  # The pane the log last said it was reading: a change of binding is a
+  # transition too, and the log is where the operator checks it.
+  local bound_now=""
   # The blind state the log last recorded. A transition — in, out, or
   # from one reason to another — is what gets a line; a tick that only
   # repeats the known state does not (see LOG POSTURE in the header).
@@ -234,9 +173,15 @@ run() {
   while true; do
     sleep "$TICK"
 
-    local cap rc=0 reason
-    cap="$(tmux capture-pane -t "$pane" -p -S -25 2>/dev/null)" || rc=$?
-    reason="$(blind_reason "$pane" "$rc" "$cap")"
+    observe
+    local pane="$OBS_PANE" cap="$OBS_CAP" reason="$OBS_REASON"
+    if [ -n "$pane" ] && [ "$pane" != "$bound_now" ]; then
+      log "BOUND to pane ${pane} (@role=${ROLE})${bound_now:+, was ${bound_now}}"
+      bound_now="$pane"
+      # Idle time is a fact about ONE pane: carrying it over would nudge a
+      # pane the watch has just met.
+      qualifying=0; idle_secs=0
+    fi
     if [ -n "$reason" ]; then
       if [ "$reason" != "$blind_now" ]; then
         blind_now="$reason"
@@ -325,53 +270,43 @@ run() {
 case "$CMD" in
 start)
   if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
-    echo "already running pid=$(cat "$PIDFILE") pane=$(cat "$PANEFILE" 2>/dev/null || echo UNKNOWN)"
+    echo "already running pid=$(cat "$PIDFILE")"
     exit 0
   fi
-  # Resolve BEFORE forking, so an unresolvable watch is an exit code the
-  # operator sees rather than a background process reporting `running`.
-  binding="$(resolve_pane_once)" || exit 1
-  pane="${binding%% *}"
-  bound_by="${binding##* }"
-  nohup "$0" _run "$TITLE" --pane "$pane" --source "$bound_by" >/dev/null 2>&1 &
+  nohup "$0" _run "$ROLE" >/dev/null 2>&1 &
   disown
   sleep 1
-  echo "started auto-clear watch pane=${pane} (bound by ${bound_by}) title='$TITLE' pid=$(cat "$PIDFILE" 2>/dev/null) log=$LOGFILE"
+  # Say what it sees NOW. Starting with no pane carrying the role is legal
+  # (systemd starts it at boot, before the orchestrator exists) — but it is
+  # said, not implied.
+  observe
+  if [ -n "$OBS_REASON" ]; then
+    echo "started auto-clear watch role='$ROLE' pid=$(cat "$PIDFILE" 2>/dev/null) BLIND: ${OBS_REASON} log=$LOGFILE"
+  else
+    echo "started auto-clear watch role='$ROLE' pane=${OBS_PANE} pid=$(cat "$PIDFILE" 2>/dev/null) log=$LOGFILE"
+  fi
   ;;
 _run)
-  [ -n "$PANE_OPT" ] || { echo "auto-clear-watch: _run is internal and requires --pane" >&2; exit 64; }
-  run "$PANE_OPT" "${SOURCE_OPT:-unknown}"
+  run
   ;;
 stop)
   if [ -f "$PIDFILE" ]; then
     kill "$(cat "$PIDFILE")" 2>/dev/null
-    rm -f "$PIDFILE" "$PANEFILE"
+    rm -f "$PIDFILE"
     echo "stopped"
   else echo "not running"; fi
   ;;
 status)
   if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
-    # WHICH pane, always — a bare `running` is what let a watch bound
-    # to `%5` look healthy for as long as it did (#1761).
-    watched="$(cat "$PANEFILE" 2>/dev/null || true)"
-    if [ -z "$watched" ]; then
-      echo "running pid=$(cat "$PIDFILE") pane=UNKNOWN — no pane file, so this was started by a pre-#1761 build; stop and restart it. log=$LOGFILE"
+    # DERIVED, not remembered: the loop's own observation, run right now.
+    observe
+    if [ -n "$OBS_REASON" ]; then
+      echo "running pid=$(cat "$PIDFILE") role='$ROLE' BLIND: ${OBS_REASON} log=$LOGFILE"
     else
-      # DERIVED, not remembered: run the loop's own observation right
-      # now. A `running` that never looked is how the %5 misbinding
-      # survived, and a status reading a state file would be one more
-      # thing that can go stale.
-      scap=""; srr=0
-      scap="$(tmux capture-pane -t "$watched" -p -S -25 2>/dev/null)" || srr=$?
-      sreason="$(blind_reason "$watched" "$srr" "$scap")"
-      if [ -n "$sreason" ]; then
-        echo "running pid=$(cat "$PIDFILE") pane=${watched} BLIND: ${sreason} log=$LOGFILE"
-      else
-        echo "running pid=$(cat "$PIDFILE") pane=${watched} watching (ctx=$(parse_ctx "$scap")%) log=$LOGFILE"
-      fi
+      echo "running pid=$(cat "$PIDFILE") role='$ROLE' pane=${OBS_PANE} watching (ctx=$(parse_ctx "$OBS_CAP")%) log=$LOGFILE"
     fi
     tail -4 "$LOGFILE" 2>/dev/null
   else echo "not running"; fi
   ;;
-*) echo "usage: $0 {start|stop|status} [TITLE] [--pane %NN]"; exit 64 ;;
+*) echo "usage: $0 {start|stop|status} [ROLE]"; exit 64 ;;
 esac
